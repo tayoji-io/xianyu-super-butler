@@ -60,13 +60,15 @@ class OrderDetailFetcher:
     _order_locks = defaultdict(lambda: asyncio.Lock())
 
     # fork:proxy 订单详情页要带账号 Cookie 访问，出口 IP 必须与账号一致
-    def __init__(self, cookie_string: str = None, headless: bool = True, proxy_url: str = ""):
+    def __init__(self, cookie_string: str = None, headless: bool = True, proxy_url: str = "", account_id: str = ""):
         self.browser: Optional[Browser] = None
         self.context: Optional[BrowserContext] = None
         self.page: Optional[Page] = None
         self.headless = headless  # 保存headless设置
         # 订单详情页要带账号 Cookie 访问，出口 IP 必须与账号一致
         self.proxy_url = proxy_url or ""
+        # fork:fingerprint 账号标识，用于隔离缓存与浏览器存储
+        self.account_id = account_id or ""
 
         # 请求头配置
         self.headers = {
@@ -161,8 +163,12 @@ class OrderDetailFetcher:
             logger.info(f"启动浏览器，参数: {browser_args}")
             # fork:proxy
             from utils.proxy_utils import playwright_proxy
+            from utils import account_identity  # fork:fingerprint
 
-            launch_options = {'headless': headless, 'args': browser_args}
+            launch_options = {
+                'headless': headless,
+                'args': list(browser_args) + account_identity.launch_args(self.account_id),
+            }
             proxy = playwright_proxy(self.proxy_url)
             if proxy:
                 launch_options['proxy'] = proxy
@@ -180,6 +186,7 @@ class OrderDetailFetcher:
             # DOM 只剩两三个节点 —— 表现为规格、收货人、金额全空，换任何选择器都是 0 个元素。
             # 因此必须以真实移动端身份访问。
             self.context = await self.browser.new_context(
+                storage_state=account_identity.load_storage_state(self.account_id),  # fork:fingerprint
                 viewport={'width': 390, 'height': 844},
                 device_scale_factor=3,
                 is_mobile=True,
@@ -1073,6 +1080,13 @@ class OrderDetailFetcher:
     async def close(self):
         """关闭浏览器"""
         try:
+            # fork:fingerprint 关闭前落盘 localStorage/Cookie
+            try:
+                from utils import account_identity
+
+                await account_identity.save_storage_state(self.context, self.account_id)
+            except Exception:
+                pass
             if self.page:
                 await self.page.close()
             if self.context:
@@ -1096,7 +1110,7 @@ class OrderDetailFetcher:
 
 
 # 便捷函数
-async def fetch_order_detail_simple(order_id: str, cookie_string: str = None, headless: bool = True, proxy_url: str = "") -> Optional[Dict[str, Any]]:  # fork:proxy
+async def fetch_order_detail_simple(order_id: str, cookie_string: str = None, headless: bool = True, proxy_url: str = "", account_id: str = "") -> Optional[Dict[str, Any]]:  # fork:proxy
     """
     简单的订单详情获取函数（优化版：先检查数据库，再初始化浏览器）
 
@@ -1184,7 +1198,7 @@ async def fetch_order_detail_simple(order_id: str, cookie_string: str = None, he
     logger.info(f"🌐 订单 {order_id} 需要浏览器获取，开始初始化浏览器...")
     print(f"[SEARCH] 订单 {order_id} 开始浏览器获取详情...")
 
-    fetcher = OrderDetailFetcher(cookie_string, headless, proxy_url=proxy_url)  # fork:proxy
+    fetcher = OrderDetailFetcher(cookie_string, headless, proxy_url=proxy_url, account_id=account_id)  # fork:proxy
     try:
         if await fetcher.init_browser(headless=headless):
             return await fetcher.fetch_order_detail(order_id)

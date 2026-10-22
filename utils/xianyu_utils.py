@@ -113,28 +113,24 @@ def generate_uuid() -> str:
 
 
 def generate_device_id(user_id: str) -> str:
-    """生成设备ID"""
-    import random
-    
-    # 字符集
-    chars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
-    result = []
-    
-    for i in range(36):
-        if i in [8, 13, 18, 23]:
-            result.append("-")
-        elif i == 14:
-            result.append("4")
-        else:
-            if i == 19:
-                # 对于位置19，需要特殊处理
-                rand_val = int(16 * random.random())
-                result.append(chars[(rand_val & 0x3) | 0x8])
-            else:
-                rand_val = int(16 * random.random())
-                result.append(chars[rand_val])
-    
-    return ''.join(result) + "-" + user_id
+    """生成设备ID。
+
+    fork:fingerprint —— 原实现每次调用都随机生成：账号重启就换一台"新设备"，
+    而且 reply_server / manual_captcha 刷新 Token 时各自再生成一个，导致同一
+    账号在不同请求里的 deviceId 不一致。平台侧看到的不是"多个账号同设备"，
+    而是"同一账号的设备在频繁更换"，同样可疑。
+
+    改为由账号标识确定性派生：同一账号在任何进程、任何重启后都得到同一个
+    deviceId，不同账号之间仍然不同。
+    """
+    seed = hashlib.sha256(f"xianyu-device::{user_id or ''}".encode("utf-8")).hexdigest()
+    hexs = seed[:32]
+    variant = "89ab"[int(hexs[16], 16) % 4]
+    uuid_like = (
+        f"{hexs[0:8]}-{hexs[8:12]}-4{hexs[13:16]}-"
+        f"{variant}{hexs[17:20]}-{hexs[20:32]}"
+    )
+    return f"{uuid_like}-{user_id}"
 
 
 def generate_sign(t: str, token: str, data: str) -> str:

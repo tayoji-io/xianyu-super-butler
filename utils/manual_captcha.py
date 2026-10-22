@@ -182,18 +182,21 @@ async def open_manual_session(
     refresh_task = None
     try:
         playwright = await async_playwright().start()
+        # fork:fingerprint 每个账号一份磁盘缓存
+        from utils import account_identity
+
         launch_options = {
             'headless': headless,
-            # 只用完整版 Chromium。headless=True 默认会去找单独下载的
-            # chromium_headless_shell，缺失时报 Executable doesn't exist，
-            # 人工验证页面就会卡在「正在服务器上打开验证页面」。
-            'channel': 'chromium',
             'args': [
                 "--no-sandbox",
                 "--disable-setuid-sandbox",
                 "--disable-dev-shm-usage",
                 "--disable-blink-features=AutomationControlled",
-            ],
+            ] + account_identity.launch_args(cookie_id),
+            # 只用完整版 Chromium。headless=True 默认会去找单独下载的
+            # chromium_headless_shell，缺失时报 Executable doesn't exist，
+            # 人工验证页面就会卡在「正在服务器上打开验证页面」。
+            'channel': 'chromium',
         }
         # fork:proxy 滑块页要带着账号 Cookie 访问，出口 IP 必须与账号一致
         proxy = playwright_proxy(get_cookie_proxy(cookie_id))
@@ -204,9 +207,15 @@ async def open_manual_session(
             launch_options,
             "人工验证码",
         )
+        # fork:fingerprint 按账号固定特征，并复用该账号的 localStorage
         context = await browser.new_context(
-            viewport={"width": 1280, "height": 800},
-            user_agent=CHROME_UA,
+            **account_identity.context_options(
+                cookie_id,
+                {
+                    'user_agent': CHROME_UA,
+                    'storage_state': account_identity.load_storage_state(cookie_id),
+                },
+            )
         )
 
         if cookies_str:
@@ -291,6 +300,13 @@ async def open_manual_session(
         logger.error(f"【{cookie_id}】{result['message']}")
         return result
     finally:
+        # fork:fingerprint 关闭前落盘 localStorage/Cookie
+        try:
+            from utils import account_identity as _identity
+
+            await _identity.save_storage_state(context, cookie_id)
+        except Exception:
+            pass
         if refresh_task and not refresh_task.done():
             refresh_task.cancel()
         try:

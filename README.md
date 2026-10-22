@@ -61,6 +61,19 @@
 - 设计说明、改动清单与上游合并流程见 [docs/FORK_PROXY.md](docs/FORK_PROXY.md)。
 <!-- fork:proxy end -->
 
+<!-- fork:fingerprint 本段为 fork 新增能力，上游没有；同步上游时保留 -->
+### 账号级浏览器身份（本 fork 新增）
+
+同一台机器跑多个账号时，不再共用一套浏览器特征：deviceId 按账号稳定派生，
+视口/缩放/配色按账号固定，磁盘缓存与 localStorage 按账号隔离。
+
+- 目的：降低"多个账号看起来是同一台设备"的关联度；不伪造 UA，避免
+  Client Hints 对不上。
+- 边界：TLS/HTTP2 指纹仍由 Python 栈决定，同机 GPU/字体仍相同；彻底隔离需要
+  一账号一容器。
+- 细节与合并注意事项见 [docs/FORK_FINGERPRINT.md](docs/FORK_FINGERPRINT.md)。
+<!-- fork:fingerprint end -->
+
 ## 界面预览
 
 ### 账号管理：一个后台管完所有小号

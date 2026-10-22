@@ -203,7 +203,13 @@ class BrowserPool:
             from utils.proxy_utils import get_cookie_proxy, playwright_proxy
 
             cookie_proxy = get_cookie_proxy(cookie_id)
-            launch_options = {'headless': headless, 'args': browser_args}
+            # fork:fingerprint 每个账号一份磁盘缓存
+            from utils import account_identity
+
+            launch_options = {
+                'headless': headless,
+                'args': list(browser_args) + account_identity.launch_args(cookie_id),
+            }
             proxy = playwright_proxy(cookie_proxy)
             if proxy:
                 launch_options['proxy'] = proxy
@@ -214,10 +220,15 @@ class BrowserPool:
             )
             self._pool_proxies[cookie_id] = cookie_proxy
 
-            # 创建浏览器上下文
+            # fork:fingerprint 按账号固定视口/缩放/配色，并复用该账号的 localStorage
             context = await browser.new_context(
-                viewport={'width': 1920, 'height': 1080},
-                user_agent=CHROME_UA
+                **account_identity.context_options(
+                    cookie_id,
+                    {
+                        'user_agent': CHROME_UA,
+                        'storage_state': account_identity.load_storage_state(cookie_id),
+                    },
+                )
             )
 
             # 设置Cookie
@@ -297,6 +308,14 @@ class BrowserPool:
         playwright, browser, context, page, _ = self.pool[cookie_id]
 
         try:
+            # fork:fingerprint 关闭前落盘 localStorage/Cookie
+            try:
+                from utils import account_identity
+
+                await account_identity.save_storage_state(context, cookie_id)
+            except Exception:
+                pass
+
             # 关闭页面
             if page:
                 try:

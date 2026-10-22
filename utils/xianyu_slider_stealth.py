@@ -501,12 +501,19 @@ class XianyuSliderStealth:
                 "--password-store=basic",
                 "--use-mock-keychain",
             ]
+            # fork:fingerprint 每个账号一份磁盘缓存
+            try:
+                from utils import account_identity
+
+                launch_args.extend(account_identity.launch_args(self.pure_user_id))
+            except Exception:
+                pass
 
             # 持久化上下文没有独立的 browser 对象，context 即入口
             context_options = {
                 'locale': browser_features['locale'],
                 'timezone_id': browser_features['timezone_id'],
-                'color_scheme': random.choice(['light', 'dark', 'no-preference']),
+                'color_scheme': browser_features.get('color_scheme', 'light'),  # fork:fingerprint
                 'ignore_https_errors': False,
             }
             if not self.headless:
@@ -934,18 +941,24 @@ class XianyuSliderStealth:
         所以 user_agent 现在返回 None：让 Chromium 报自己真实的 UA，与
         Client Hints 天然一致。调用方需按 falsy 跳过覆盖。
         """
+        # fork:fingerprint 同一账号固定一套视口/缩放/配色，不同账号之间不同。
+        # 仍然不做 UA 伪造：原生 UA 与 Client Hints 一致，比伪造更安全。
+        from utils import account_identity
+
+        fp = account_identity.fingerprint_for(self.pure_user_id)
         return {
-            'window_size': '1920,1080',
+            'window_size': fp['window_size'],
             'lang': 'zh-CN',
             'accept_lang': 'zh-CN,zh;q=0.9,en;q=0.8',
             'user_agent': None,
-            'locale': 'zh-CN',
-            'viewport_width': 1920,
-            'viewport_height': 1080,
-            'device_scale_factor': 1.0,
+            'locale': fp['locale'],
+            'viewport_width': fp['viewport']['width'],
+            'viewport_height': fp['viewport']['height'],
+            'device_scale_factor': fp['device_scale_factor'],
+            'color_scheme': fp['color_scheme'],
             'is_mobile': False,
             'has_touch': False,
-            'timezone_id': 'Asia/Shanghai'
+            'timezone_id': fp['timezone_id'],
         }
     
     def _get_stealth_script(self, browser_features):
@@ -3091,6 +3104,14 @@ class XianyuSliderStealth:
                 '--disable-features=VizDisplayCompositor',
                 '--lang=zh-CN',  # 设置浏览器语言为中文
             ]
+            # fork:fingerprint 每个账号一份磁盘缓存与固定视口
+            try:
+                from utils import account_identity
+
+                browser_args.extend(account_identity.launch_args(self.pure_user_id))
+                _login_fp = account_identity.fingerprint_for(self.pure_user_id)
+            except Exception:
+                _login_fp = {'viewport': {'width': 1980, 'height': 1024}}
             
             # 在启动Playwright之前，重新检查和设置浏览器路径
             # 确保使用正确的浏览器版本（避免版本不匹配问题）
@@ -3133,7 +3154,7 @@ class XianyuSliderStealth:
                 user_data_dir,
                 headless=not show_browser,
                 args=browser_args,
-                viewport={'width': 1980, 'height': 1024},
+                viewport=_login_fp['viewport'],
                 user_agent=CHROME_UA,
                 locale='zh-CN',  # 设置浏览器区域为中文
                 accept_downloads=True,

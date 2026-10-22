@@ -28,6 +28,7 @@ from app.specification import combine_legacy_specification
 from utils.log_sanitizer import redact_log_record, redact_sensitive_text
 from utils.user_agents import CHROME_UA, SEC_CH_UA
 # >>> fork:proxy 按账号代理（上游无此模块，合并时整段保留）
+from utils import account_identity  # fork:fingerprint
 from utils.proxy_utils import (
     ProxyConfigError,
     create_aiohttp_session,
@@ -3673,9 +3674,11 @@ class XianyuLive:
 
     def _get_playwright_launch_options(self, playwright, browser_args, purpose: str) -> dict:
         """构造浏览器启动参数，Playwright浏览器缺失时回退到系统Chrome/Edge。"""
+        # fork:fingerprint 每个账号一份磁盘缓存，避免所有号共用同一个空 profile
+        cache_args = account_identity.launch_args(self.cookie_id)
         launch_options = {
             'headless': True,
-            'args': browser_args,
+            'args': list(browser_args) + cache_args,
             # 显式指定完整版 Chromium。headless=True 时 Playwright 会优先找
             # chromium_headless_shell-*，那是与 chromium-* 分开下载的另一份文件；
             # 下载中断时常常只装上其中一个，于是出现「自检说浏览器已安装、
@@ -3961,9 +3964,15 @@ class XianyuLive:
                 "账号资料抓取",
             )
             browser = await browser_limit.launch_browser(playwright, launch_options, "账号资料抓取")
+            # fork:fingerprint 按账号固定视口/缩放/配色，并复用该账号的 localStorage
             context = await browser.new_context(
-                viewport={'width': 1440, 'height': 900},
-                user_agent=CHROME_UA,
+                **account_identity.context_options(
+                    self.cookie_id,
+                    {
+                        'user_agent': CHROME_UA,
+                        'storage_state': account_identity.load_storage_state(self.cookie_id),
+                    },
+                )
             )
 
             browser_cookies = []
@@ -4035,6 +4044,11 @@ class XianyuLive:
                 'error_type': type(exc).__name__,
             }
         finally:
+            # fork:fingerprint 落盘 localStorage/Cookie，供下次复用
+            try:
+                await account_identity.save_storage_state(context, self.cookie_id)
+            except Exception:
+                pass
             if context:
                 try:
                     await context.close()
@@ -4110,10 +4124,15 @@ class XianyuLive:
             )
             browser = await browser_limit.launch_browser(playwright, launch_options, "商品详情获取")
 
-            # 创建浏览器上下文
+            # fork:fingerprint 创建浏览器上下文（按账号固定特征）
             context = await browser.new_context(
-                viewport={'width': 1920, 'height': 1080},
-                user_agent=CHROME_UA
+                **account_identity.context_options(
+                    self.cookie_id,
+                    {
+                        'user_agent': CHROME_UA,
+                        'storage_state': account_identity.load_storage_state(self.cookie_id),
+                    },
+                )
             )
 
             # 设置Cookie
@@ -4168,6 +4187,11 @@ class XianyuLive:
             logger.error(f"浏览器获取商品详情异常: {item_id}, 错误: {self._safe_str(e)}")
             return ""
         finally:
+            # fork:fingerprint 落盘 localStorage/Cookie，供下次复用
+            try:
+                await account_identity.save_storage_state(context, self.cookie_id)
+            except Exception:
+                pass
             # 确保资源被正确清理
             try:
                 if browser:
@@ -5958,6 +5982,7 @@ class XianyuLive:
                         order_id, cookie_string,
                         headless=headless_mode,
                         proxy_url=self.proxy_url,
+                        account_id=self.cookie_id,  # fork:fingerprint
                     )
 
                 if result:
@@ -8254,13 +8279,14 @@ class XianyuLive:
             browser = await browser_limit.launch_browser(playwright, launch_options, "扫码登录")
             logger.info(f"【{target_cookie_id}】无头浏览器启动成功")
 
-            # 创建浏览器上下文
-            context_options = {
-                'user_agent': CHROME_UA
-            }
-
-            # 使用标准窗口大小
-            context_options['viewport'] = {'width': 1920, 'height': 1080}
+            # fork:fingerprint 创建浏览器上下文（按账号固定特征）
+            context_options = account_identity.context_options(
+                target_cookie_id,
+                {
+                    'user_agent': CHROME_UA,
+                    'storage_state': account_identity.load_storage_state(target_cookie_id),
+                },
+            )
 
             context = await browser.new_context(**context_options)
 
@@ -8419,6 +8445,11 @@ class XianyuLive:
             logger.error(f"【{target_cookie_id}】使用扫码cookie获取真实cookie失败: {self._safe_str(e)}")
             return False
         finally:
+            # fork:fingerprint 落盘 localStorage/Cookie，供下次复用
+            try:
+                await account_identity.save_storage_state(context, target_cookie_id)
+            except Exception:
+                pass
             # 确保资源清理
             try:
                 # 先关闭浏览器，再关闭Playwright（顺序很重要）
@@ -8590,13 +8621,14 @@ class XianyuLive:
             )
             browser = await browser_limit.launch_browser(playwright, launch_options, "浏览器页面刷新")
 
-            # 创建浏览器上下文
-            context_options = {
-                'user_agent': CHROME_UA
-            }
-
-            # 使用标准窗口大小
-            context_options['viewport'] = {'width': 1920, 'height': 1080}
+            # fork:fingerprint 创建浏览器上下文（按账号固定特征）
+            context_options = account_identity.context_options(
+                self.cookie_id,
+                {
+                    'user_agent': CHROME_UA,
+                    'storage_state': account_identity.load_storage_state(self.cookie_id),
+                },
+            )
 
             context = await browser.new_context(**context_options)
 
@@ -8723,6 +8755,11 @@ class XianyuLive:
             logger.error(f"【{self.cookie_id}】使用当前cookie访问指定页面获取真实cookie失败: {self._safe_str(e)}")
             return False
         finally:
+            # fork:fingerprint 落盘 localStorage/Cookie，供下次复用
+            try:
+                await account_identity.save_storage_state(context, self.cookie_id)
+            except Exception:
+                pass
             # 确保资源清理
             try:
                 # 先关闭浏览器，再关闭Playwright（顺序很重要）
@@ -8897,13 +8934,14 @@ class XianyuLive:
             )
             browser = await browser_limit.launch_browser(playwright, launch_options, "定时Cookie刷新")
 
-            # 创建浏览器上下文
-            context_options = {
-                'user_agent': CHROME_UA
-            }
-
-            # 使用标准窗口大小
-            context_options['viewport'] = {'width': 1920, 'height': 1080}
+            # fork:fingerprint 创建浏览器上下文（按账号固定特征）
+            context_options = account_identity.context_options(
+                self.cookie_id,
+                {
+                    'user_agent': CHROME_UA,
+                    'storage_state': account_identity.load_storage_state(self.cookie_id),
+                },
+            )
 
             context = await browser.new_context(**context_options)
 
@@ -9072,6 +9110,11 @@ class XianyuLive:
             logger.error(f"【{self.cookie_id}】通过浏览器刷新Cookie失败: {self._safe_str(e)}")
             return False
         finally:
+            # fork:fingerprint 落盘 localStorage/Cookie，供下次复用
+            try:
+                await account_identity.save_storage_state(context, self.cookie_id)
+            except Exception:
+                pass
             # 异步关闭浏览器：创建清理任务并等待完成，确保资源正确释放
             close_task = None
             try:
