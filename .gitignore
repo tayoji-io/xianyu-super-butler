@@ -813,3 +813,7 @@ deploy/.wrangler/
 
 # 本地验证用的 Playwright 浏览器（fork:fingerprint 验证）
 .playwright-browsers/
+
+# 本地用 pnpm 构建前端时的临时文件（仓库统一用 npm）
+frontend/pnpm-lock.yaml
+.pnpm-store/
