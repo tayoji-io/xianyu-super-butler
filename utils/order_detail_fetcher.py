@@ -59,11 +59,14 @@ class OrderDetailFetcher:
     # 类级别的锁字典，为每个order_id维护一个锁
     _order_locks = defaultdict(lambda: asyncio.Lock())
 
-    def __init__(self, cookie_string: str = None, headless: bool = True):
+    # fork:proxy 订单详情页要带账号 Cookie 访问，出口 IP 必须与账号一致
+    def __init__(self, cookie_string: str = None, headless: bool = True, proxy_url: str = ""):
         self.browser: Optional[Browser] = None
         self.context: Optional[BrowserContext] = None
         self.page: Optional[Page] = None
         self.headless = headless  # 保存headless设置
+        # 订单详情页要带账号 Cookie 访问，出口 IP 必须与账号一致
+        self.proxy_url = proxy_url or ""
 
         # 请求头配置
         self.headers = {
@@ -156,9 +159,16 @@ class OrderDetailFetcher:
                 ])
 
             logger.info(f"启动浏览器，参数: {browser_args}")
+            # fork:proxy
+            from utils.proxy_utils import playwright_proxy
+
+            launch_options = {'headless': headless, 'args': browser_args}
+            proxy = playwright_proxy(self.proxy_url)
+            if proxy:
+                launch_options['proxy'] = proxy
             self.browser = await browser_limit.launch_browser(
                 playwright,
-                {'headless': headless, 'args': browser_args},
+                launch_options,
                 "订单详情抓取",
             )
 
@@ -1086,7 +1096,7 @@ class OrderDetailFetcher:
 
 
 # 便捷函数
-async def fetch_order_detail_simple(order_id: str, cookie_string: str = None, headless: bool = True) -> Optional[Dict[str, Any]]:
+async def fetch_order_detail_simple(order_id: str, cookie_string: str = None, headless: bool = True, proxy_url: str = "") -> Optional[Dict[str, Any]]:  # fork:proxy
     """
     简单的订单详情获取函数（优化版：先检查数据库，再初始化浏览器）
 
@@ -1174,7 +1184,7 @@ async def fetch_order_detail_simple(order_id: str, cookie_string: str = None, he
     logger.info(f"🌐 订单 {order_id} 需要浏览器获取，开始初始化浏览器...")
     print(f"[SEARCH] 订单 {order_id} 开始浏览器获取详情...")
 
-    fetcher = OrderDetailFetcher(cookie_string, headless)
+    fetcher = OrderDetailFetcher(cookie_string, headless, proxy_url=proxy_url)  # fork:proxy
     try:
         if await fetcher.init_browser(headless=headless):
             return await fetcher.fetch_order_detail(order_id)

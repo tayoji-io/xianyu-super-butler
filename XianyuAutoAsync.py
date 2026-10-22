@@ -27,6 +27,16 @@ from app.db_manager import db_manager
 from app.specification import combine_legacy_specification
 from utils.log_sanitizer import redact_log_record, redact_sensitive_text
 from utils.user_agents import CHROME_UA, SEC_CH_UA
+# >>> fork:proxy 按账号代理（上游无此模块，合并时整段保留）
+from utils.proxy_utils import (
+    ProxyConfigError,
+    create_aiohttp_session,
+    get_cookie_proxy,
+    mask_proxy_url,
+    open_websocket,
+    playwright_proxy,
+)
+# <<< fork:proxy
 
 # 滑块验证补丁已废弃，使用集成的 Playwright 登录方法
 # 不再需要猴子补丁，所有功能已集成到 XianyuSliderStealth 类中
@@ -866,6 +876,15 @@ class XianyuLive:
         self.cookies_str = cookies_str  # 保存原始cookie字符串
         self.user_id = user_id  # 保存用户ID，用于token刷新时保持正确的所有者关系
         self.base_url = WEBSOCKET_URL
+
+        # >>> fork:proxy 账号级出站代理。配置了就必须走代理：这里刻意让非法
+        # 配置直接抛错，而不是退回直连 —— 悄悄用本机 IP 出网比账号连不上危险得多。
+        self.proxy_url = get_cookie_proxy(cookie_id)
+        if self.proxy_url:
+            logger.info(f"【{cookie_id}】出站代理: {mask_proxy_url(self.proxy_url)}")
+        else:
+            logger.info(f"【{cookie_id}】出站代理: 直连")
+        # <<< fork:proxy
 
         if 'unb' not in self.cookies:
             raise ValueError(f"【{cookie_id}】Cookie中缺少必需的'unb'字段，当前字段: {list(self.cookies.keys())}")
@@ -2337,7 +2356,8 @@ class XianyuLive:
                 f"payload_length={len(data_val)}"
             )
 
-            async with aiohttp.ClientSession() as session:
+            # fork:proxy Token 刷新也带账号身份
+            async with create_aiohttp_session(self.proxy_url) as session:
                 async with session.post(
                     api_url,
                     params=params,
@@ -2735,7 +2755,8 @@ class XianyuLive:
                 slider_stealth = XianyuSliderStealth(
                     user_id=f"{self.cookie_id}",
                     enable_learning=True,  # 启用学习功能
-                    headless=slider_headless
+                    headless=slider_headless,
+                    proxy_url=self.proxy_url,  # fork:proxy
                 )
 
                 # 在线程池中执行滑块验证
@@ -3165,7 +3186,12 @@ class XianyuLive:
             
             # 在单独的线程中运行同步的登录方法
             import asyncio
-            slider = XianyuSliderStealth(user_id=self.cookie_id, enable_learning=False, headless=not show_browser)
+            slider = XianyuSliderStealth(
+                user_id=self.cookie_id,
+                enable_learning=False,
+                headless=not show_browser,
+                proxy_url=self.proxy_url,  # fork:proxy
+            )
             result = await asyncio.to_thread(
                 slider.login_with_password_playwright,
                 account=username,
@@ -3360,7 +3386,7 @@ class XianyuLive:
                 
                 # 创建图片上传实例
                 from utils.image_uploader import ImageUploader
-                uploader = ImageUploader(cookies_str=self.cookies_str)
+                uploader = ImageUploader(cookies_str=self.cookies_str, proxy_url=self.proxy_url)  # fork:proxy
                 
                 # 创建session
                 await uploader.create_session()
@@ -3657,6 +3683,11 @@ class XianyuLive:
             # 完整版，与下方 executable_path 的检查也就对得上了。
             'channel': 'chromium',
         }
+        # fork:proxy 浏览器流量也必须走账号代理：Cookie 刷新、资料抓取都带着
+        # 账号身份，漏掉这一条等于把真实 IP 直接交出去。
+        proxy = playwright_proxy(self.proxy_url)
+        if proxy:
+            launch_options['proxy'] = proxy
         bundled_executable = playwright.chromium.executable_path
         if os.path.exists(bundled_executable):
             logger.info(f"【{self.cookie_id}】{purpose}使用Playwright Chromium")
@@ -4694,7 +4725,7 @@ class XianyuLive:
 
                     # 使用图片上传器上传到闲鱼CDN
                     from utils.image_uploader import ImageUploader
-                    uploader = ImageUploader(self.cookies_str)
+                    uploader = ImageUploader(self.cookies_str, self.proxy_url)  # fork:proxy
 
                     async with uploader:
                         cdn_url = await uploader.upload_image(local_image_path)
@@ -4773,7 +4804,8 @@ class XianyuLive:
                 'Referer': 'https://www.goofish.com/',
             }
             
-            async with aiohttp.ClientSession() as session:
+            # fork:proxy 下载商品图也走账号代理
+            async with create_aiohttp_session(self.proxy_url) as session:
                 async with session.get(image_url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
                     if response.status == 200:
                         image_data = await response.read()
@@ -5802,7 +5834,9 @@ class XianyuLive:
             if self.session is None or (session_loop is not None and session_loop is not running_loop):
                 headers = DEFAULT_HEADERS.copy()
                 headers['cookie'] = self.cookies_str
-                temp_session = aiohttp.ClientSession(
+                # fork:proxy 临时 session 同样走账号代理
+                temp_session = create_aiohttp_session(
+                    self.proxy_url,
                     headers=headers,
                     timeout=aiohttp.ClientTimeout(total=30),
                 )
@@ -5919,7 +5953,12 @@ class XianyuLive:
                         logger.info(f"【{self.cookie_id}】🖥️ 启用有头模式进行调试")
 
                     # 异步获取订单详情（使用当前账号的cookie）
-                    result = await fetch_order_detail_simple(order_id, cookie_string, headless=headless_mode)
+                    # fork:proxy 订单详情浏览器同样走账号代理
+                    result = await fetch_order_detail_simple(
+                        order_id, cookie_string,
+                        headless=headless_mode,
+                        proxy_url=self.proxy_url,
+                    )
 
                 if result:
                     logger.info(f"【{self.cookie_id}】订单详情获取成功: {order_id}")
@@ -9185,27 +9224,10 @@ class XianyuLive:
             "Accept-Encoding": "gzip, deflate, br, zstd",
             "Accept-Language": "zh-CN,zh;q=0.9",
         }
-        # 兼容不同版本的websockets库
-        try:
-            async with websockets.connect(
-                self.base_url,
-                extra_headers=headers
-            ) as websocket:
-                await self._handle_websocket_connection(websocket, toid, item_id, text)
-        except TypeError as e:
-            # 安全地检查异常信息
-            error_msg = self._safe_str(e)
-
-            if "extra_headers" in error_msg:
-                logger.warning("websockets库不支持extra_headers参数，使用兼容模式")
-                # 使用兼容模式，通过subprotocols传递部分头信息
-                async with websockets.connect(
-                    self.base_url,
-                    additional_headers=headers
-                ) as websocket:
-                    await self._handle_websocket_connection(websocket, toid, item_id, text)
-            else:
-                raise
+        # fork:proxy 走账号代理；websockets 版本差异由 proxy_utils 统一处理
+        websocket_cm = await open_websocket(self.base_url, headers, self.proxy_url)
+        async with websocket_cm as websocket:
+            await self._handle_websocket_connection(websocket, toid, item_id, text)
 
     async def _create_websocket_connection(self, headers):
         """创建WebSocket连接，兼容不同版本的websockets库"""
@@ -9213,39 +9235,9 @@ class XianyuLive:
 
         # 获取websockets版本用于调试
         websockets_version = getattr(websockets, '__version__', '未知')
-        logger.warning(f"websockets库版本: {websockets_version}")
+        logger.debug(f"websockets库版本: {websockets_version}")
 
-        try:
-            # 尝试使用extra_headers参数
-            return websockets.connect(
-                self.base_url,
-                extra_headers=headers
-            )
-        except Exception as e:
-            # 捕获所有异常类型，不仅仅是TypeError
-            error_msg = self._safe_str(e)
-            logger.warning(f"extra_headers参数失败: {error_msg}")
-
-            if "extra_headers" in error_msg or "unexpected keyword argument" in error_msg:
-                logger.warning("websockets库不支持extra_headers参数，尝试additional_headers")
-                # 使用additional_headers参数（较新版本）
-                try:
-                    return websockets.connect(
-                        self.base_url,
-                        additional_headers=headers
-                    )
-                except Exception as e2:
-                    error_msg2 = self._safe_str(e2)
-                    logger.warning(f"additional_headers参数失败: {error_msg2}")
-
-                    if "additional_headers" in error_msg2 or "unexpected keyword argument" in error_msg2:
-                        # 如果都不支持，则不传递headers
-                        logger.warning("websockets库不支持headers参数，使用基础连接模式")
-                        return websockets.connect(self.base_url)
-                    else:
-                        raise e2
-            else:
-                raise e
+        return await open_websocket(self.base_url, headers, self.proxy_url)
 
     async def _handle_websocket_connection(self, websocket, toid, item_id, text):
         """处理WebSocket连接的具体逻辑"""
@@ -9291,13 +9283,15 @@ class XianyuLive:
             return False
 
     async def create_session(self):
-        """创建aiohttp session"""
+        """创建aiohttp session（带账号代理）"""
         if not self.session:
             # 创建带有cookies和headers的session
             headers = DEFAULT_HEADERS.copy()
             headers['cookie'] = self.cookies_str
 
-            self.session = aiohttp.ClientSession(
+            # fork:proxy 会话默认走账号代理
+            self.session = create_aiohttp_session(
+                self.proxy_url,
                 headers=headers,
                 timeout=aiohttp.ClientTimeout(total=30)
             )
@@ -9768,7 +9762,7 @@ class XianyuLive:
                                             logger.info(f"【{self.cookie_id}】准备上传默认回复本地图片到闲鱼CDN: {local_image_path}")
                                             
                                             from utils.image_uploader import ImageUploader
-                                            uploader = ImageUploader(self.cookies_str)
+                                            uploader = ImageUploader(self.cookies_str, self.proxy_url)  # fork:proxy
                                             
                                             async with uploader:
                                                 cdn_url = await uploader.upload_image(local_image_path)
@@ -11458,7 +11452,7 @@ class XianyuLive:
 
                     # 使用图片上传器上传到闲鱼CDN
                     from utils.image_uploader import ImageUploader
-                    uploader = ImageUploader(self.cookies_str)
+                    uploader = ImageUploader(self.cookies_str, self.proxy_url)  # fork:proxy
 
                     async with uploader:
                         cdn_url = await uploader.upload_image(local_image_path)
@@ -11571,7 +11565,7 @@ class XianyuLive:
             logger.info(f"【{self.cookie_id}】开始上传图片: {image_path}")
 
             from utils.image_uploader import ImageUploader
-            uploader = ImageUploader(self.cookies_str)
+            uploader = ImageUploader(self.cookies_str, self.proxy_url)  # fork:proxy
 
             async with uploader:
                 image_url = await uploader.upload_image(image_path)

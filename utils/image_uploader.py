@@ -14,23 +14,30 @@ from utils.user_agents import CHROME_UA
 class ImageUploader:
     """图片上传器 - 上传图片到闲鱼CDN"""
     
-    def __init__(self, cookies_str: str):
+    # >>> fork:proxy 上传图片走账号代理
+    def __init__(self, cookies_str: str, proxy_url: str = ""):
         self.cookies_str = cookies_str
+        # 图片上传同样带着账号 Cookie 打到闲鱼 CDN，必须走账号代理
+        self.proxy_url = proxy_url or ""
         self.upload_url = "https://stream-upload.goofish.com/api/upload.api?floderId=0&appkey=xy_chat&_input_charset=utf-8"
         self.session = None
     
     async def create_session(self):
         """创建HTTP会话"""
         if not self.session:
+            from utils.proxy_utils import create_aiohttp_session
+
             connector = aiohttp.TCPConnector(limit=100, limit_per_host=30)
             timeout = aiohttp.ClientTimeout(total=30)
-            self.session = aiohttp.ClientSession(
+            self.session = create_aiohttp_session(
+                self.proxy_url,
                 connector=connector,
                 timeout=timeout,
                 headers={
                     'User-Agent': CHROME_UA
                 }
             )
+    # <<< fork:proxy
     
     async def close_session(self):
         """关闭HTTP会话"""

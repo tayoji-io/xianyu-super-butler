@@ -124,6 +124,7 @@ class DBManager:
                 auto_confirm INTEGER DEFAULT 1,
                 remark TEXT DEFAULT '',
                 pause_duration INTEGER DEFAULT 10,
+                proxy_id TEXT DEFAULT '',  -- fork:proxy 关联 proxies.id，空串=直连
                 username TEXT DEFAULT '',
                 password TEXT DEFAULT '',
                 show_browser INTEGER DEFAULT 0,
@@ -138,6 +139,23 @@ class DBManager:
                 FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
             )
             ''')
+
+            # >>> fork:proxy 代理库：账号从代理库里选一个，改代理地址时所有引用
+            # 它的账号自动生效，不用逐个账号改
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS proxies (
+                id TEXT PRIMARY KEY,
+                user_id INTEGER,
+                name TEXT DEFAULT '',
+                url TEXT NOT NULL,
+                remark TEXT DEFAULT '',
+                enabled INTEGER DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            )
+            ''')
+            # <<< fork:proxy
 
             
             # 创建keywords表
@@ -1052,6 +1070,8 @@ class DBManager:
                 'followers': "INTEGER",
                 'following': "INTEGER",
                 'profile_updated_at': "TIMESTAMP",
+                # fork:proxy 账号选中的代理（proxies.id），空串表示直连
+                'proxy_id': "TEXT DEFAULT ''",
             }
             for column_name, column_type in profile_columns.items():
                 if column_name not in cookie_columns:
@@ -2137,8 +2157,13 @@ class DBManager:
                         admin_user = cursor.fetchone()
                         user_id = admin_user[0] if admin_user else 1
 
+                # fork:proxy 原实现用 INSERT OR REPLACE：SQLite 的 REPLACE 会先删行再插入，
+                # 未列出的列（proxy_id / auto_confirm / remark / pause_duration …）全部
+                # 回到默认值。Cookie 每次刷新都会走这里，等于把账号设置连同代理绑定一起
+                # 清空，账号会悄悄退回直连。改成 UPSERT 只更新 value/user_id。
                 self._execute_sql(cursor,
-                    "INSERT OR REPLACE INTO cookies (id, value, user_id) VALUES (?, ?, ?)",
+                    "INSERT INTO cookies (id, value, user_id) VALUES (?, ?, ?) "
+                    "ON CONFLICT(id) DO UPDATE SET value = excluded.value, user_id = excluded.user_id",
                     (cookie_id, cookie_value, user_id)
                 )
 
@@ -2250,12 +2275,13 @@ class DBManager:
                 self._execute_sql(
                     cursor,
                     """
-                    SELECT id, value, user_id, auto_confirm, remark, pause_duration,
-                           username, password, show_browser, nickname, avatar_url,
-                           location, bio, followers, following, profile_updated_at,
-                           created_at
-                    FROM cookies
-                    WHERE id = ?
+                    SELECT c.id, c.value, c.user_id, c.auto_confirm, c.remark, c.pause_duration,
+                           c.username, c.password, c.show_browser, c.nickname, c.avatar_url,
+                           c.location, c.bio, c.followers, c.following, c.profile_updated_at,
+                           c.created_at, c.proxy_id, p.name, p.url  -- fork:proxy
+                    FROM cookies c
+                    LEFT JOIN proxies p ON p.id = c.proxy_id
+                    WHERE c.id = ?
                     """,
                     (cookie_id,),
                 )
@@ -2279,6 +2305,10 @@ class DBManager:
                         'following': result[14],
                         'profile_updated_at': result[15],
                         'created_at': result[16],
+                        # fork:proxy
+                        'proxy_id': result[17] or '',
+                        'proxy_name': result[18] or '',
+                        'proxy_url': result[19] or '',
                     }
                 return None
             except Exception as e:
@@ -2357,6 +2387,223 @@ class DBManager:
             except Exception as e:
                 logger.error(f"更新账号备注失败: {e}")
                 return False
+
+    # >>> fork:proxy 代理库 CRUD + 账号绑定（上游无此段，合并时整段保留）
+    def list_proxies(self, user_id: Optional[int] = None) -> List[Dict[str, Any]]:
+        """列出代理库；user_id 为 None 时返回全部（管理员用）。"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                if user_id is None:
+                    self._execute_sql(
+                        cursor,
+                        """
+                        SELECT id, user_id, name, url, remark, enabled, created_at, updated_at
+                        FROM proxies ORDER BY created_at DESC
+                        """,
+                    )
+                else:
+                    self._execute_sql(
+                        cursor,
+                        """
+                        SELECT id, user_id, name, url, remark, enabled, created_at, updated_at
+                        FROM proxies WHERE user_id = ? ORDER BY created_at DESC
+                        """,
+                        (user_id,),
+                    )
+                rows = cursor.fetchall()
+                return [
+                    {
+                        'id': row[0],
+                        'user_id': row[1],
+                        'name': row[2] or '',
+                        'url': row[3] or '',
+                        'remark': row[4] or '',
+                        'enabled': bool(row[5]),
+                        'created_at': row[6],
+                        'updated_at': row[7],
+                    }
+                    for row in rows
+                ]
+            except Exception as e:
+                logger.error(f"获取代理列表失败: {e}")
+                return []
+
+    def get_proxy(self, proxy_id: str) -> Optional[Dict[str, Any]]:
+        """按 id 读取代理。"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                self._execute_sql(
+                    cursor,
+                    """
+                    SELECT id, user_id, name, url, remark, enabled, created_at, updated_at
+                    FROM proxies WHERE id = ?
+                    """,
+                    (proxy_id,),
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return None
+                return {
+                    'id': row[0],
+                    'user_id': row[1],
+                    'name': row[2] or '',
+                    'url': row[3] or '',
+                    'remark': row[4] or '',
+                    'enabled': bool(row[5]),
+                    'created_at': row[6],
+                    'updated_at': row[7],
+                }
+            except Exception as e:
+                logger.error(f"获取代理失败: {e}")
+                return None
+
+    def create_proxy(self, proxy_id: str, name: str, url: str,
+                     remark: str = '', user_id: Optional[int] = None,
+                     enabled: bool = True) -> bool:
+        """新增代理。"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                self._execute_sql(
+                    cursor,
+                    """
+                    INSERT INTO proxies (id, user_id, name, url, remark, enabled)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (proxy_id, user_id, name or '', url, remark or '', int(enabled)),
+                )
+                self.conn.commit()
+                logger.info(f"新增代理: {proxy_id} ({name or url})")
+                return True
+            except Exception as e:
+                logger.error(f"新增代理失败: {e}")
+                self.conn.rollback()
+                return False
+
+    def update_proxy(self, proxy_id: str, **fields: Any) -> bool:
+        """更新代理的 name/url/remark/enabled。"""
+        allowed = {'name', 'url', 'remark', 'enabled'}
+        updates = []
+        params: List[Any] = []
+        for key, value in fields.items():
+            if key not in allowed or value is None:
+                continue
+            if key == 'enabled':
+                value = int(bool(value))
+            updates.append(f"{key} = ?")
+            params.append(value)
+        if not updates:
+            return False
+        updates.append("updated_at = CURRENT_TIMESTAMP")
+        params.append(proxy_id)
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                self._execute_sql(
+                    cursor,
+                    f"UPDATE proxies SET {', '.join(updates)} WHERE id = ?",
+                    tuple(params),
+                )
+                if cursor.rowcount == 0:
+                    logger.warning(f"代理 {proxy_id} 不存在，无法更新")
+                    return False
+                self.conn.commit()
+                logger.info(f"更新代理: {proxy_id}")
+                return True
+            except Exception as e:
+                logger.error(f"更新代理失败: {e}")
+                self.conn.rollback()
+                return False
+
+    def delete_proxy(self, proxy_id: str) -> bool:
+        """删除代理；引用它的账号自动回到直连。"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                self._execute_sql(
+                    cursor,
+                    "UPDATE cookies SET proxy_id = '' WHERE proxy_id = ?",
+                    (proxy_id,),
+                )
+                self._execute_sql(cursor, "DELETE FROM proxies WHERE id = ?", (proxy_id,))
+                self.conn.commit()
+                logger.info(f"删除代理: {proxy_id}，引用它的账号已回退为直连")
+                return True
+            except Exception as e:
+                logger.error(f"删除代理失败: {e}")
+                self.conn.rollback()
+                return False
+
+    def update_cookie_proxy_id(self, cookie_id: str, proxy_id: str) -> bool:
+        """设置账号选用的代理（空串表示直连）。"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                self._execute_sql(
+                    cursor,
+                    "UPDATE cookies SET proxy_id = ? WHERE id = ?",
+                    (proxy_id or "", cookie_id),
+                )
+                if cursor.rowcount == 0:
+                    logger.warning(f"账号 {cookie_id} 不存在，无法更新代理设置")
+                    return False
+                self.conn.commit()
+                logger.info(f"更新账号 {cookie_id} 代理: {proxy_id or '直连'}")
+                return True
+            except Exception as e:
+                logger.error(f"更新账号代理设置失败: {e}")
+                self.conn.rollback()
+                return False
+
+    def get_cookie_proxy_id(self, cookie_id: str) -> str:
+        """读取账号选用的代理 id，空串表示直连。"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                self._execute_sql(
+                    cursor, "SELECT proxy_id FROM cookies WHERE id = ?", (cookie_id,)
+                )
+                result = cursor.fetchone()
+                return (result[0] or "") if result else ""
+            except Exception as e:
+                logger.error(f"获取账号代理设置失败: {e}")
+                return ""
+
+    def get_cookie_proxy(self, cookie_id: str) -> str:
+        """解析账号实际使用的代理地址；空串表示直连。
+
+        账号选了代理但代理被删/被停用时返回特殊标记，由调用方决定如何处理 ——
+        这里不返回空串，避免调用方误当成「直连」而泄漏真实 IP。
+        """
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                self._execute_sql(
+                    cursor,
+                    """
+                    SELECT c.proxy_id, p.url, p.enabled
+                    FROM cookies c LEFT JOIN proxies p ON p.id = c.proxy_id
+                    WHERE c.id = ?
+                    """,
+                    (cookie_id,),
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return ""
+                proxy_id, url, enabled = row[0] or "", row[1] or "", row[2]
+                if not proxy_id:
+                    return ""
+                if not url:
+                    return "__missing__"
+                if enabled is not None and not bool(enabled):
+                    return "__disabled__"
+                return url
+            except Exception as e:
+                logger.error(f"获取账号代理设置失败: {e}")
+                return ""
+    # <<< fork:proxy
 
     def update_cookie_pause_duration(self, cookie_id: str, pause_duration: int) -> bool:
         """更新Cookie的自动回复暂停时间"""

@@ -66,11 +66,26 @@ class XianyuSellerAPI:
         "NOT_SHIP_EXPIRED",
     )
 
-    def __init__(self, cookie_id: str, cookies_str: str, session: Optional[aiohttp.ClientSession] = None):
+    # >>> fork:proxy 卖家接口按账号代理出网
+    def __init__(
+        self,
+        cookie_id: str,
+        cookies_str: str,
+        session: Optional[aiohttp.ClientSession] = None,
+        proxy_url: Optional[str] = None,
+    ):
         self.cookie_id = cookie_id
         self.cookies_str = cookies_str or ""
         self._session = session
         self._owns_session = session is None
+        # 不传就按 cookie_id 从账号设置里取，避免每个调用点都要记得透传，
+        # 漏一处就是一条带着真实 IP 出去的请求
+        if proxy_url is None:
+            from utils.proxy_utils import get_cookie_proxy
+
+            proxy_url = get_cookie_proxy(cookie_id)
+        self.proxy_url = proxy_url or ""
+    # <<< fork:proxy
 
     async def __aenter__(self) -> "XianyuSellerAPI":
         await self._ensure_session()
@@ -81,7 +96,9 @@ class XianyuSellerAPI:
 
     async def _ensure_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession()
+            from utils.proxy_utils import create_aiohttp_session  # fork:proxy
+
+            self._session = create_aiohttp_session(self.proxy_url)  # fork:proxy
             self._owns_session = True
         return self._session
 

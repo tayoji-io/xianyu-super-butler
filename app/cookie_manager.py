@@ -400,6 +400,25 @@ class CookieManager:
                 logger.error(f"【{cookie_id}】更新账号Cookie超时（30秒）")
                 raise TimeoutError(f"更新账号超时，请稍后重试：{cookie_id}")
 
+    # >>> fork:proxy 代理变更后重启账号任务（上游无此方法）
+    def restart_cookie_task(self, cookie_id: str, reason: str = "") -> None:
+        """重启账号监听任务（不修改 Cookie）。
+
+        代理这类「连接参数」改动后必须重建 WebSocket：旧连接仍然走老出口，
+        只改数据库不重连等于没生效。
+        """
+        value = self.cookies.get(cookie_id)
+        if not value:
+            info = db_manager.get_cookie_details(cookie_id) or {}
+            value = info.get('value') or ''
+        if not value:
+            raise ValueError(f"账号 {cookie_id} 不存在，无法重启")
+        logger.info(
+            f"【{cookie_id}】重启账号任务" + (f"：{reason}" if reason else "")
+        )
+        return self.update_cookie(cookie_id, value, save_to_db=False)
+    # <<< fork:proxy
+
     def update_keywords(self, cookie_id: str, kw_list: List[Tuple[str, str]]):
         """线程安全更新关键字"""
         self.keywords[cookie_id] = kw_list

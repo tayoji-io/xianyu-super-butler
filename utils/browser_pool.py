@@ -44,6 +44,10 @@ class BrowserPool:
         # 全局锁：保护pool的读写
         self._pool_lock = asyncio.Lock()
 
+        # fork:proxy 记录每个池化浏览器启动时用的代理；账号改代理后必须重建浏览器，
+        # 否则旧实例会继续从老出口出去
+        self._pool_proxies: Dict[str, str] = {}
+
         logger.info(f"浏览器池初始化完成，最大实例数: {max_size}，闲置超时: {idle_timeout}秒")
 
     async def get_browser(
@@ -68,6 +72,14 @@ class BrowserPool:
         async with self._locks[cookie_id]:
             # 检查是否已存在该cookie_id的浏览器实例
             async with self._pool_lock:
+                if cookie_id in self.pool:
+                    # fork:proxy 代理改过就必须重建，复用旧实例等于继续用老出口
+                    from utils.proxy_utils import get_cookie_proxy
+
+                    if self._pool_proxies.get(cookie_id, "") != get_cookie_proxy(cookie_id):
+                        logger.info(f"账号 {cookie_id} 的代理配置已变更，重建浏览器实例")
+                        await self._close_browser_unsafe(cookie_id)
+
                 if cookie_id in self.pool:
                     playwright, browser, context, page, _ = self.pool[cookie_id]
 
@@ -187,12 +199,20 @@ class BrowserPool:
                     '--no-pings'
                 ])
 
-            # 启动浏览器
+            # fork:proxy 启动浏览器（带账号代理）
+            from utils.proxy_utils import get_cookie_proxy, playwright_proxy
+
+            cookie_proxy = get_cookie_proxy(cookie_id)
+            launch_options = {'headless': headless, 'args': browser_args}
+            proxy = playwright_proxy(cookie_proxy)
+            if proxy:
+                launch_options['proxy'] = proxy
             browser = await browser_limit.launch_browser(
                 playwright,
-                {'headless': headless, 'args': browser_args},
+                launch_options,
                 "浏览器池",
             )
+            self._pool_proxies[cookie_id] = cookie_proxy
 
             # 创建浏览器上下文
             context = await browser.new_context(
@@ -310,7 +330,8 @@ class BrowserPool:
             logger.error(f"关闭浏览器实例失败: {e}")
         finally:
             # 从池中移除
-            del self.pool[cookie_id]
+            self.pool.pop(cookie_id, None)
+            self._pool_proxies.pop(cookie_id, None)
 
     async def close_browser(self, cookie_id: str):
         """

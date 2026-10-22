@@ -149,7 +149,10 @@ async def polish_account_items(
     failed = 0
     details: List[Dict[str, Any]] = []
 
-    async with aiohttp.ClientSession() as session:
+    # fork:proxy 擦亮是账号级操作，走该账号配置的代理
+    from utils.proxy_utils import create_aiohttp_session, get_cookie_proxy
+
+    async with create_aiohttp_session(get_cookie_proxy(cookie_id)) as session:
         for index, item_id in enumerate(item_ids):
             result = await polish_item(session, cookies_str, item_id)
             cookies_str = result["cookies_str"]

@@ -377,10 +377,12 @@ strategy_stats = RetryStrategyStats()
 
 class XianyuSliderStealth:
     
-    def __init__(self, user_id: str = "default", enable_learning: bool = True, headless: bool = True):
+    def __init__(self, user_id: str = "default", enable_learning: bool = True, headless: bool = True, proxy_url: str = ""):  # fork:proxy
         self.user_id = user_id
         self.enable_learning = enable_learning
         self.headless = headless  # 是否使用无头模式（默认True，使用无头模式）
+        # fork:proxy 滑块页带着账号 Cookie 访问，出口 IP 必须与账号一致
+        self.proxy_url = proxy_url or ""
         self.browser = None
         self.page = None
         self.context = None
@@ -514,6 +516,14 @@ class XianyuSliderStealth:
                     'width': browser_features['viewport_width'],
                     'height': browser_features['viewport_height'],
                 }
+
+            # fork:proxy 滑块验证走账号代理；Chromium 的 context 级 proxy 对持久化上下文同样生效。
+            # 配置有问题就让它直接失败 —— 滑块页带着账号 Cookie，绝不能退回直连。
+            from utils.proxy_utils import playwright_proxy
+
+            proxy = playwright_proxy(self.proxy_url)
+            if proxy:
+                context_options['proxy'] = proxy
 
             try:
                 self.context = self.playwright.chromium.launch_persistent_context(
@@ -3114,6 +3124,11 @@ class XianyuSliderStealth:
             browser_limit.acquire_slot("密码登录")
             password_login_slot_held = True
             playwright = sync_playwright().start()
+            # fork:proxy 密码登录同样带账号身份，必须走该账号的代理；
+            # 拿不到代理就让启动失败，绝不退回直连
+            from utils.proxy_utils import playwright_proxy
+
+            login_proxy = playwright_proxy(self.proxy_url)
             context = playwright.chromium.launch_persistent_context(
                 user_data_dir,
                 headless=not show_browser,
@@ -3123,6 +3138,7 @@ class XianyuSliderStealth:
                 locale='zh-CN',  # 设置浏览器区域为中文
                 accept_downloads=True,
                 ignore_https_errors=True,
+                proxy=login_proxy,
                 extra_http_headers={
                     'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8'  # 设置HTTP Accept-Language header为中文
                 }

@@ -1747,9 +1747,19 @@ async def xianyu_reply(req: RequestModel):
 # ------------------------- 账号 / 关键字管理接口 -------------------------
 
 
+# fork:proxy 扫码登录可选代理（必须定义在路由之前，FastAPI 在导入时求值默认参数）
+class QRGenerateIn(BaseModel):
+    # 不传则用环境变量 QR_LOGIN_PROXY / 直连
+    proxy_url: str = ""
+    # 代理库 id：扫码完成建号时自动绑定，保证登录与日常使用同一出口
+    proxy_id: str = ""
+
+
 class CookieIn(BaseModel):
     id: str
     value: str
+    # fork:proxy 新增账号时可直接绑定代理库中的代理
+    proxy_id: Optional[str] = None
 
 
 class CookieStatusIn(BaseModel):
@@ -1909,6 +1919,10 @@ def get_cookies_details(current_user: Dict[str, Any] = Depends(get_current_user)
             'auto_confirm': auto_confirm,
             'remark': remark,
             'pause_duration': cookie_details.get('pause_duration', 10),
+            # fork:proxy 账号绑定的代理；编辑走 /cookies/{id}/proxy
+            'proxy_id': cookie_details.get('proxy_id', ''),
+            'proxy_name': cookie_details.get('proxy_name', ''),
+            'proxy_url': cookie_details.get('proxy_url', ''),
             'nickname': cookie_details.get('nickname', ''),
             'avatar_url': cookie_details.get('avatar_url', ''),
             'location': cookie_details.get('location', ''),
@@ -1949,6 +1963,21 @@ def add_cookie(item: CookieIn, current_user: Dict[str, Any] = Depends(get_curren
 
         # 保存到数据库时指定用户ID
         db_manager.save_cookie(item.id, item.value, user_id)
+
+        # >>> fork:proxy 新增账号时可直接绑定代理（要在启动任务前写入）
+        if item.proxy_id:
+            proxy = db_manager.get_proxy(item.proxy_id)
+            if not proxy or proxy.get('user_id') != user_id:
+                db_manager.delete_cookie(item.id)
+                raise HTTPException(status_code=404, detail="代理不存在")
+            if not db_manager.update_cookie_proxy_id(item.id, item.proxy_id):
+                db_manager.delete_cookie(item.id)
+                raise HTTPException(status_code=500, detail="代理绑定失败")
+            from utils.proxy_utils import invalidate_proxy_cache, mask_proxy_url
+
+            invalidate_proxy_cache(item.id)
+            log_with_user('info', f"账号 {item.id} 使用代理: {mask_proxy_url(proxy['url'])}", current_user)
+        # <<< fork:proxy
 
         # 添加到CookieManager，同时指定用户ID
         cookie_manager.manager.add_cookie(item.id, item.value, user_id=user_id)
@@ -2203,12 +2232,17 @@ async def _execute_password_login(session_id: str, account_id: str, account: str
         # 导入 XianyuSliderStealth
         from utils.xianyu_slider_stealth import XianyuSliderStealth
         
+        # >>> fork:proxy 滑块页走账号代理
         # 创建 XianyuSliderStealth 实例
+        from utils.proxy_utils import get_cookie_proxy
+
         slider_instance = XianyuSliderStealth(
             user_id=account_id,
             enable_learning=True,
-            headless=not show_browser
+            headless=not show_browser,
+            proxy_url=get_cookie_proxy(account_id),
         )
+        # <<< fork:proxy
         
         # 更新会话信息
         password_login_sessions[session_id]['slider_instance'] = slider_instance
@@ -2812,12 +2846,22 @@ async def delete_account_face_verification_screenshot(
 # ========================= 扫码登录相关接口 =========================
 
 @app.post("/qr-login/generate")
-async def generate_qr_code(current_user: Dict[str, Any] = Depends(get_current_user)):
-    """生成扫码登录二维码"""
+async def generate_qr_code(payload: Optional[QRGenerateIn] = None, current_user: Dict[str, Any] = Depends(get_current_user)):
+    """生成扫码登录二维码（fork:proxy：可指定本次登录使用的代理）"""
     try:
         log_with_user('info', "请求生成扫码登录二维码", current_user)
 
-        result = await qr_login_manager.generate_qr_code()
+        # fork:proxy 登录流量也走指定出口；优先用代理库里的条目
+        proxy_url = (payload.proxy_url if payload else "") or ""
+        proxy_id = (payload.proxy_id if payload else "") or ""
+        if proxy_id:
+            proxy = db_manager.get_proxy(proxy_id)
+            if not proxy or proxy.get('user_id') != current_user['user_id']:
+                raise HTTPException(status_code=404, detail="代理不存在")
+            if not proxy.get('enabled'):
+                raise HTTPException(status_code=400, detail="该代理已停用，请先启用或换一个")
+            proxy_url = proxy['url']
+        result = await qr_login_manager.generate_qr_code(proxy_url=proxy_url, proxy_id=proxy_id)
 
         if result['success']:
             log_with_user('info', f"扫码登录二维码生成成功: {result['session_id']}", current_user)
@@ -2916,10 +2960,15 @@ async def _process_qr_login_session(
     """快速保存扫码Cookie，再在后台增强Cookie。"""
     started_at = time.perf_counter()
     try:
+        # fork:proxy 扫码时选过代理库条目，建号后自动绑定
+        qr_session = qr_login_manager.sessions.get(session_id)
+        proxy_id = getattr(qr_session, 'proxy_id', '') if qr_session else ''
+
         account_info = await process_qr_login_cookies(
             cookies_info['cookies'],
             cookies_info['unb'],
-            current_user
+            current_user,
+            proxy_id=proxy_id,
         )
         manager_operation = account_info.pop('_manager_operation', None)
         result = {
@@ -2967,7 +3016,8 @@ async def _process_qr_login_session(
         }
 
 
-async def process_qr_login_cookies(cookies: str, unb: str, current_user: Dict[str, Any]) -> Dict[str, Any]:
+async def process_qr_login_cookies(cookies: str, unb: str, current_user: Dict[str, Any],
+                                   proxy_id: str = "") -> Dict[str, Any]:
     """验证并快速保存扫码Cookie，不等待浏览器增强刷新。"""
     user_id = current_user['user_id']
     cookie_fields = trans_cookies(cookies)
@@ -3011,6 +3061,16 @@ async def process_qr_login_cookies(cookies: str, unb: str, current_user: Dict[st
         )
     if not saved:
         raise RuntimeError("扫码Cookie保存失败")
+
+    # >>> fork:proxy 绑定扫码时选中的代理（必须在启动账号任务之前写入，
+    # 否则账号会先以直连建立一次 WebSocket）
+    if proxy_id:
+        if not db_manager.update_cookie_proxy_id(account_id, proxy_id):
+            raise RuntimeError("代理绑定失败")
+        from utils.proxy_utils import invalidate_proxy_cache
+
+        invalidate_proxy_cache(account_id)
+    # <<< fork:proxy
 
     manager_operation = None
     if cookie_manager.manager:
@@ -4217,6 +4277,25 @@ class PauseDurationUpdate(BaseModel):
     pause_duration: int
 
 
+# >>> fork:proxy 代理管理 / 账号绑定请求体
+class AccountProxyUpdate(BaseModel):
+    # 选中的代理 id；空串表示该账号直连
+    proxy_id: str = ""
+
+
+class ProxyIn(BaseModel):
+    name: str = ""
+    url: str
+    remark: str = ""
+    enabled: bool = True
+
+
+class ProxyCheckIn(BaseModel):
+    url: str = ""
+
+# <<< fork:proxy
+
+
 @app.put("/cookies/{cid}/auto-confirm")
 def update_auto_confirm(cid: str, update_data: AutoConfirmUpdate, current_user: Dict[str, Any] = Depends(get_current_user)):
     """更新账号的自动确认发货设置"""
@@ -4394,6 +4473,203 @@ def get_cookie_pause_duration(cid: str, current_user: Dict[str, Any] = Depends(g
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# >>> fork:proxy 代理管理 + 账号绑定（上游无此路由，合并时整段保留）
+@app.get("/proxies")
+def list_proxies(current_user: Dict[str, Any] = Depends(get_current_user)):
+    """列出当前用户的代理库，并附带被多少账号引用。"""
+    from utils.proxy_utils import mask_proxy_url
+
+    proxies = db_manager.list_proxies(current_user['user_id'])
+    usage: Dict[str, int] = {}
+    for cookie_id in db_manager.get_all_cookies(current_user['user_id']):
+        pid = db_manager.get_cookie_proxy_id(cookie_id)
+        if pid:
+            usage[pid] = usage.get(pid, 0) + 1
+    for item in proxies:
+        item['account_count'] = usage.get(item['id'], 0)
+        item['url_display'] = mask_proxy_url(item['url'])
+    return proxies
+
+
+@app.post("/proxies")
+def create_proxy(payload: ProxyIn, current_user: Dict[str, Any] = Depends(get_current_user)):
+    """新增代理。"""
+    import uuid
+
+    from utils.proxy_utils import ProxyConfigError, mask_proxy_url, validate_proxy_url
+
+    try:
+        url = validate_proxy_url(payload.url)
+    except ProxyConfigError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if not url:
+        raise HTTPException(status_code=400, detail="代理地址不能为空")
+
+    proxy_id = uuid.uuid4().hex[:12]
+    name = (payload.name or '').strip() or mask_proxy_url(url)
+    if not db_manager.create_proxy(
+        proxy_id, name, url, payload.remark or '',
+        user_id=current_user['user_id'], enabled=payload.enabled,
+    ):
+        raise HTTPException(status_code=500, detail="代理保存失败")
+
+    log_with_user('info', f"新增代理: {name} -> {mask_proxy_url(url)}", current_user)
+    item = db_manager.get_proxy(proxy_id) or {}
+    item['account_count'] = 0
+    item['url_display'] = mask_proxy_url(url)
+    return item
+
+
+@app.put("/proxies/{pid}")
+def update_proxy(pid: str, payload: ProxyIn, current_user: Dict[str, Any] = Depends(get_current_user)):
+    """修改代理。改了 url 后，引用它的账号重启即生效。"""
+    from utils.proxy_utils import ProxyConfigError, invalidate_proxy_cache, mask_proxy_url, validate_proxy_url
+
+    existing = db_manager.get_proxy(pid)
+    if not existing or existing.get('user_id') != current_user['user_id']:
+        raise HTTPException(status_code=404, detail="代理不存在")
+
+    try:
+        url = validate_proxy_url(payload.url)
+    except ProxyConfigError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if not url:
+        raise HTTPException(status_code=400, detail="代理地址不能为空")
+
+    ok = db_manager.update_proxy(
+        pid,
+        name=(payload.name or '').strip() or mask_proxy_url(url),
+        url=url,
+        remark=payload.remark or '',
+        enabled=payload.enabled,
+    )
+    if not ok:
+        raise HTTPException(status_code=500, detail="代理更新失败")
+
+    # 引用了这个代理的账号都缓存了旧地址，必须全部失效
+    invalidate_proxy_cache()
+    log_with_user('info', f"更新代理: {pid} -> {mask_proxy_url(url)}", current_user)
+    return db_manager.get_proxy(pid) or {}
+
+
+@app.delete("/proxies/{pid}")
+def delete_proxy(pid: str, current_user: Dict[str, Any] = Depends(get_current_user)):
+    """删除代理。仍被账号引用时拒绝删除，避免这些账号被迫回退直连。"""
+    existing = db_manager.get_proxy(pid)
+    if not existing or existing.get('user_id') != current_user['user_id']:
+        raise HTTPException(status_code=404, detail="代理不存在")
+
+    affected = [
+        cookie_id
+        for cookie_id in db_manager.get_all_cookies(current_user['user_id'])
+        if db_manager.get_cookie_proxy_id(cookie_id) == pid
+    ]
+    if affected:
+        # 严格模式：不允许因为删代理把账号悄悄打回直连
+        raise HTTPException(
+            status_code=409,
+            detail=f"该代理仍被 {len(affected)} 个账号使用，请先在「账号管理」里把这些账号切换为其它代理或直连："
+                   + "、".join(affected[:10]),
+        )
+
+    if not db_manager.delete_proxy(pid):
+        raise HTTPException(status_code=500, detail="代理删除失败")
+
+    from utils.proxy_utils import invalidate_proxy_cache
+
+    invalidate_proxy_cache()
+    log_with_user('info', f"删除代理: {pid}", current_user)
+    return {"message": "代理已删除", "affected_accounts": []}
+
+
+@app.post("/proxies/check")
+async def check_proxy_url(payload: ProxyCheckIn, current_user: Dict[str, Any] = Depends(get_current_user)):
+    """用给定代理访问闲鱼接口，验证是否可用。"""
+    from utils.proxy_utils import ProxyConfigError, check_proxy, validate_proxy_url
+
+    try:
+        url = validate_proxy_url(payload.url)
+    except ProxyConfigError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if not url:
+        raise HTTPException(status_code=400, detail="代理地址不能为空")
+    return await check_proxy(url)
+
+
+@app.put("/cookies/{cid}/proxy")
+def update_cookie_proxy(cid: str, update_data: AccountProxyUpdate, current_user: Dict[str, Any] = Depends(get_current_user)):
+    """给账号选择代理（空串=直连），保存后重启该账号任务使连接走新出口。"""
+    if cookie_manager.manager is None:
+        raise HTTPException(status_code=500, detail="CookieManager 未就绪")
+
+    from utils.proxy_utils import invalidate_proxy_cache, mask_proxy_url
+
+    try:
+        user_id = current_user['user_id']
+        if cid not in db_manager.get_all_cookies(user_id):
+            raise HTTPException(status_code=403, detail="无权限操作该Cookie")
+
+        proxy_id = (update_data.proxy_id or '').strip()
+        proxy = None
+        if proxy_id:
+            proxy = db_manager.get_proxy(proxy_id)
+            if not proxy or proxy.get('user_id') != user_id:
+                raise HTTPException(status_code=404, detail="代理不存在")
+            if not proxy.get('enabled'):
+                # 绑一个停用的代理，账号重启后必然连不上；不如当场拒绝
+                raise HTTPException(status_code=400, detail="该代理已停用，请先启用或换一个")
+
+        if not db_manager.update_cookie_proxy_id(cid, proxy_id):
+            raise HTTPException(status_code=500, detail="代理设置保存失败")
+
+        # 缓存必须立刻失效，否则重启后的实例还会读到旧值
+        invalidate_proxy_cache(cid)
+        display = mask_proxy_url(proxy['url']) if proxy else '直连'
+        log_with_user('info', f"更新账号代理: {cid} -> {display}", current_user)
+
+        restart_error = None
+        try:
+            cookie_manager.manager.restart_cookie_task(cid, reason="代理设置变更")
+        except Exception as exc:
+            restart_error = str(exc)
+            logger.warning(f"【{cid}】代理设置已保存，但账号任务重启失败: {exc}")
+
+        return {
+            "message": "代理设置已保存" + ("，账号任务重启失败，请手动重启账号" if restart_error else "，账号正在按新出口重连"),
+            "proxy_id": proxy_id,
+            "proxy_url": proxy['url'] if proxy else '',
+            "proxy_display": display,
+            "restart_error": restart_error,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/cookies/{cid}/proxy")
+def get_cookie_proxy(cid: str, current_user: Dict[str, Any] = Depends(get_current_user)):
+    """读取账号绑定的代理。"""
+    if cookie_manager.manager is None:
+        raise HTTPException(status_code=500, detail="CookieManager 未就绪")
+    from utils.proxy_utils import mask_proxy_url
+
+    user_id = current_user['user_id']
+    if cid not in db_manager.get_all_cookies(user_id):
+        raise HTTPException(status_code=403, detail="无权限操作该Cookie")
+
+    proxy_id = db_manager.get_cookie_proxy_id(cid)
+    proxy = db_manager.get_proxy(proxy_id) if proxy_id else None
+    return {
+        "proxy_id": proxy_id,
+        "proxy_name": (proxy or {}).get('name', ''),
+        "proxy_url": (proxy or {}).get('url', ''),
+        "proxy_display": mask_proxy_url((proxy or {}).get('url', '')) if proxy else '直连',
+        "message": "获取代理设置成功",
+    }
+# <<< fork:proxy
 
 
 class KeywordIn(BaseModel):
@@ -8693,12 +8969,14 @@ async def manual_ship_orders(
                         failed_count += 1
                         continue
 
-                    # 创建独立的aiohttp session（避免跨异步上下文问题）
+                    # fork:proxy 创建独立的aiohttp session（避免跨异步上下文问题），走账号代理
                     import aiohttp
                     from app.secure_confirm import SecureConfirm
+                    from utils.proxy_utils import create_aiohttp_session, get_cookie_proxy
 
                     try:
-                        async with aiohttp.ClientSession(
+                        async with create_aiohttp_session(
+                            get_cookie_proxy(cookie_id),
                             headers={'cookie': cookies_str},
                             timeout=aiohttp.ClientTimeout(total=30)
                         ) as session:
@@ -9551,7 +9829,10 @@ async def get_fresh_captcha_url(
     }
 
     try:
-        async with aiohttp.ClientSession() as session:
+        # fork:proxy 账号级请求走代理
+        from utils.proxy_utils import create_aiohttp_session, get_cookie_proxy
+
+        async with create_aiohttp_session(get_cookie_proxy(cookie_id)) as session:
             async with session.post(
                 API_ENDPOINTS.get('token'),
                 params=params, data={'data': data_value}, headers=headers,

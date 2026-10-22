@@ -18,6 +18,12 @@ from typing import Any, Dict, Optional
 
 from loguru import logger
 from utils import browser_limit
+# fork:proxy
+from utils.proxy_utils import (
+    create_aiohttp_session,
+    get_cookie_proxy,
+    playwright_proxy,
+)
 from utils.user_agents import CHROME_UA
 
 LOGIN_URL = "https://www.goofish.com/"
@@ -116,7 +122,8 @@ async def _fetch_live_verification_url(cookie_id: str, cookies_str: str) -> Opti
             "cookie": cookies_str,
         }
 
-        async with aiohttp.ClientSession() as session:
+        # fork:proxy 实时刷新惩罚 URL 也走账号代理
+        async with create_aiohttp_session(get_cookie_proxy(cookie_id)) as session:
             async with session.post(
                 API_ENDPOINTS.get("token"),
                 params=params,
@@ -175,19 +182,26 @@ async def open_manual_session(
     refresh_task = None
     try:
         playwright = await async_playwright().start()
-        browser = await browser_limit.launch_browser(
-            playwright,
-            {'headless': headless,
-             # 只用完整版 Chromium。headless=True 默认会去找单独下载的
-             # chromium_headless_shell，缺失时报 Executable doesn't exist，
-             # 人工验证页面就会卡在「正在服务器上打开验证页面」。
-             'channel': 'chromium',
-             'args': [
+        launch_options = {
+            'headless': headless,
+            # 只用完整版 Chromium。headless=True 默认会去找单独下载的
+            # chromium_headless_shell，缺失时报 Executable doesn't exist，
+            # 人工验证页面就会卡在「正在服务器上打开验证页面」。
+            'channel': 'chromium',
+            'args': [
                 "--no-sandbox",
                 "--disable-setuid-sandbox",
                 "--disable-dev-shm-usage",
                 "--disable-blink-features=AutomationControlled",
-            ]},
+            ],
+        }
+        # fork:proxy 滑块页要带着账号 Cookie 访问，出口 IP 必须与账号一致
+        proxy = playwright_proxy(get_cookie_proxy(cookie_id))
+        if proxy:
+            launch_options['proxy'] = proxy
+        browser = await browser_limit.launch_browser(
+            playwright,
+            launch_options,
             "人工验证码",
         )
         context = await browser.new_context(

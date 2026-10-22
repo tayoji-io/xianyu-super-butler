@@ -70,6 +70,11 @@ class QRLoginSession:
         self.verification_qr_code_url = None  # 验证URL的二维码，生成一次后复用
         self.verification_extended = False
         self.last_remote_status = None
+        # fork:proxy 本次扫码登录使用的代理。登录流量也走账号将来要用的出口，
+        # 避免平台看到「A 地扫码、B 地长期使用」这种更可疑的组合。
+        self.proxy_url = ""
+        # 本次登录选中的代理库 id；账号保存后直接绑定，避免「登录走代理、运行时直连」
+        self.proxy_id = ""
         # 服务端打开的验证页任务。人脸验证必须由持有该页面的浏览器完成后续登录，
         # 手机只负责扫页面上的码、刷脸，登录态会落在这个浏览器里。
         self.verification_task = None
@@ -108,12 +113,19 @@ class QRLoginManager:
         self.api_scan_status = f"{self.host}/newlogin/qrcode/query.do"
         self.api_h5_tk = "https://h5api.m.goofish.com/h5/mtop.gaia.nodejs.gaia.idle.data.gw.v2.index.get/1.0/"
         
-        # 配置代理（如果需要的话，取消注释并修改代理地址）
-        # self.proxy = "http://127.0.0.1:7890"
-        self.proxy = None
+        # >>> fork:proxy 全局默认代理：调用方没给这次扫码指定代理时使用。
+        # 新增账号时如果已经想好这个号要用哪个出口，应显式传 proxy_url。
+        self.proxy = (os.getenv('QR_LOGIN_PROXY') or '').strip() or None
         
         # 配置超时时间
         self.timeout = httpx.Timeout(connect=30.0, read=60.0, write=30.0, pool=60.0)
+
+    def _session_proxy(self, session: Optional[QRLoginSession]) -> Optional[str]:
+        """本次扫码登录实际使用的代理（会话级优先于全局默认）。"""
+        if session is not None and session.proxy_url:
+            return session.proxy_url
+        return self.proxy
+        # <<< fork:proxy
 
     def _cookie_marshal(self, cookies: dict) -> str:
         """将Cookie字典转换为字符串"""
@@ -127,7 +139,7 @@ class QRLoginManager:
         app_key = "34839810"
 
         # 先发一次 GET 请求，获取 cookie 中的 m_h5_tk
-        async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=True, proxy=self.proxy) as client:
+        async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=True, proxy=self._session_proxy(session), trust_env=False) as client:  # fork:proxy
             try:
                 resp = await client.get(self.api_h5_tk, headers=self.headers)
                 cookies = {k: v for k, v in resp.cookies.items()}
@@ -184,7 +196,7 @@ class QRLoginManager:
             "rnd": random(),
         }
 
-        async with httpx.AsyncClient(follow_redirects=True, timeout=self.timeout, proxy=self.proxy) as client:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=self.timeout, proxy=self._session_proxy(session), trust_env=False) as client:  # fork:proxy
             try:
                 resp = await client.get(
                     self.api_mini_login,
@@ -218,12 +230,26 @@ class QRLoginManager:
                 logger.error("获取登录参数时连接错误")
                 raise
     
-    async def generate_qr_code(self) -> Dict[str, Any]:
-        """生成二维码"""
+    async def generate_qr_code(self, proxy_url: str = "", proxy_id: str = "") -> Dict[str, Any]:  # fork:proxy
+        """生成二维码。
+
+        Args:
+            proxy_url: 本次登录使用的代理地址。
+            proxy_id: 代理库里的代理 id。传入后，扫码完成创建账号时会自动绑定，
+                保证「扫码 IP」与「日常 IP」一致。
+        """
         try:
             # 创建新的会话
             session_id = str(uuid.uuid4())
             session = QRLoginSession(session_id)
+
+            # fork:proxy 登录流量也走指定出口
+            session.proxy_id = (proxy_id or "").strip()
+            if proxy_url:
+                from utils.proxy_utils import mask_proxy_url, validate_proxy_url
+
+                session.proxy_url = validate_proxy_url(proxy_url)
+                logger.info(f"扫码登录使用代理: {mask_proxy_url(session.proxy_url)}")
 
             # 1. 获取m_h5_tk
             await self._get_mh5tk(session)
@@ -234,7 +260,7 @@ class QRLoginManager:
             logger.info(f"获取登录参数成功: {session_id}")
 
             # 3. 生成二维码
-            async with httpx.AsyncClient(follow_redirects=True, timeout=self.timeout, proxy=self.proxy) as client:
+            async with httpx.AsyncClient(follow_redirects=True, timeout=self.timeout, proxy=self._session_proxy(session), trust_env=False) as client:  # fork:proxy
                 resp = await client.get(
                     self.api_generate_qr,
                     params=login_params,
@@ -313,7 +339,7 @@ class QRLoginManager:
     
     async def _poll_qrcode_status(self, session: QRLoginSession) -> httpx.Response:
         """获取二维码扫描状态"""
-        async with httpx.AsyncClient(follow_redirects=True, timeout=self.timeout, proxy=self.proxy) as client:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=self.timeout, proxy=self._session_proxy(session), trust_env=False) as client:  # fork:proxy
             resp = await client.post(
                 self.api_scan_status,
                 data=session.params,
@@ -627,11 +653,19 @@ class QRLoginManager:
 
             logger.info(f"服务端打开扫码登录验证页: {session_id}")
             playwright = await async_playwright().start()
-            browser = await playwright.chromium.launch(
+            launch_kwargs: Dict[str, Any] = {
                 # 有 Xvfb 时用有头模式，降低被识别为自动化的概率
-                headless=not os.getenv('DISPLAY'),
-                args=['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--lang=zh-CN'],
-            )
+                'headless': not os.getenv('DISPLAY'),
+                'args': ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--lang=zh-CN'],
+            }
+            # fork:proxy 验证页要带着本次登录的 Cookie 访问，出口必须与扫码时一致。
+            # 代理配置异常直接抛出：宁可验证失败，也不能用服务器 IP 打开验证页。
+            from utils.proxy_utils import playwright_proxy
+
+            proxy = playwright_proxy(self._session_proxy(session))
+            if proxy:
+                launch_kwargs['proxy'] = proxy
+            browser = await playwright.chromium.launch(**launch_kwargs)
             context = await browser.new_context(
                 viewport={'width': 960, 'height': 900},
                 locale='zh-CN',
