@@ -139,6 +139,11 @@ export const checkQRLoginStatus = async (sessionId: string): Promise<any> => {
   return get(`/qr-login/check/${sessionId}`);
 };
 
+/** 取消一次扫码登录：切换代理节点或关闭弹窗时调用，释放服务端监控与验证浏览器 */
+export const cancelQRLogin = async (sessionId: string): Promise<{ success: boolean }> => {
+  return post(`/qr-login/cancel/${sessionId}`);
+};
+
 export const updateAccountStatus = async (id: string, enabled: boolean): Promise<any> => {
   return put(`/cookies/${id}/status`, { enabled });
 };

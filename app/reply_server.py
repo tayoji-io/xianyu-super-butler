@@ -2875,6 +2875,19 @@ async def generate_qr_code(payload: Optional[QRGenerateIn] = None, current_user:
         return {'success': False, 'message': f'生成二维码失败: {str(e)}'}
 
 
+@app.post("/qr-login/cancel/{session_id}")
+async def cancel_qr_code(session_id: str, current_user: Dict[str, Any] = Depends(get_current_user)):
+    """取消一次扫码登录。
+
+    前端切换代理节点或关闭弹窗时调用：旧二维码对应的出口已经不对，
+    继续留在服务端只会让监控协程和人脸验证浏览器白跑。
+    """
+    cancelled = qr_login_manager.cancel_session(session_id)
+    if cancelled:
+        log_with_user('info', f"取消扫码登录会话: {session_id}", current_user)
+    return {'success': cancelled, 'session_id': session_id}
+
+
 @app.get("/qr-login/check/{session_id}")
 async def check_qr_code_status(session_id: str, current_user: Dict[str, Any] = Depends(get_current_user)):
     """检查扫码登录状态"""

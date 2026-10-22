@@ -10,6 +10,7 @@ import {
   deleteAccount,
   generateQRLogin,
   checkQRLoginStatus,
+  cancelQRLogin,
   updateAccountRemark,
   updateAccountAutoConfirm,
   updateAccountPauseDuration,
@@ -51,6 +52,8 @@ const AccountList: React.FC = () => {
   const [verificationUrl, setVerificationUrl] = useState<string>('');
   const qrPollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const qrSessionRef = useRef<string>('');
+  // 切换节点会连续触发生成请求，用序号丢弃过期响应
+  const qrGenSeqRef = useRef(0);
   const [activeModal, setActiveModal] = useState<ModalType>(null);
   const [editingAccount, setEditingAccount] = useState<AccountDetail | null>(null);
   const [refreshingProfileId, setRefreshingProfileId] = useState<string | null>(null);
@@ -492,21 +495,28 @@ const AccountList: React.FC = () => {
     }
   };
 
-  const startQRLogin = async () => {
+  // fork:proxy 切换节点必须重新生成二维码：旧二维码对应的是上一个出口，
+  // 继续展示会让人以为扫的是新节点。
+  const generateQRCode = async (proxyId: string) => {
+    const seq = ++qrGenSeqRef.current;
+    const previous = qrSessionRef.current;
     qrSessionRef.current = '';
     if (qrPollTimerRef.current) clearTimeout(qrPollTimerRef.current);
-    setShowQRModal(true);
+    // 旧会话不再需要，取消掉，释放服务端监控与人脸验证浏览器
+    if (previous) {
+      cancelQRLogin(previous).catch(() => undefined);
+    }
+
     setQrStatus('loading');
     setQrMessage('');
+    setQrCodeUrl('');
     setVerificationQrUrl('');
     setVerificationUrl('');
-    // 代理可能刚在「代理管理」里新增，打开弹窗时刷新一次
-    getProxies()
-      .then(list => setProxies(Array.isArray(list) ? list : []))
-      .catch(() => undefined);
+
     try {
-      // fork:proxy 登录也走选中的代理，建号后自动绑定
-      const res = await generateQRLogin(qrProxyId);
+      const res = await generateQRLogin(proxyId);
+      // 期间又切了节点，丢弃这次的结果
+      if (seq !== qrGenSeqRef.current) return;
       if (res.success && res.qr_code_url && res.session_id) {
         setQrCodeUrl(res.qr_code_url);
         setQrStatus('waiting');
@@ -583,14 +593,34 @@ const AccountList: React.FC = () => {
         setQrMessage('二维码生成失败，请重试');
       }
     } catch (e) {
+      if (seq !== qrGenSeqRef.current) return;
       setQrStatus('error');
       setQrMessage(e instanceof Error ? e.message : '扫码登录请求失败');
     }
   };
 
+  const startQRLogin = async () => {
+    setShowQRModal(true);
+    // 代理可能刚在「代理管理」里新增，打开弹窗时刷新一次
+    getProxies()
+      .then(list => setProxies(Array.isArray(list) ? list : []))
+      .catch(() => undefined);
+    await generateQRCode(qrProxyId);
+  };
+
+  const handleQRProxyChange = (proxyId: string) => {
+    setQrProxyId(proxyId);
+    if (!showQRModal) return;
+    // 节点变了，旧二维码立刻作废并重新生成
+    void generateQRCode(proxyId);
+  };
+
   const closeQRModal = () => {
+    const session = qrSessionRef.current;
     qrSessionRef.current = '';
     if (qrPollTimerRef.current) clearTimeout(qrPollTimerRef.current);
+    // 关闭弹窗后旧二维码没有意义，顺手取消，避免服务端空转
+    if (session) cancelQRLogin(session).catch(() => undefined);
     setShowQRModal(false);
   };
 
@@ -877,7 +907,7 @@ const AccountList: React.FC = () => {
                         </label>
                         <select
                           value={qrProxyId}
-                          onChange={(e) => setQrProxyId(e.target.value)}
+                          onChange={(e) => handleQRProxyChange(e.target.value)}
                           className="ios-input w-full rounded-md px-3 py-2.5"
                         >
                           <option value="">直连（使用服务器 IP）</option>
@@ -889,7 +919,8 @@ const AccountList: React.FC = () => {
                           ))}
                         </select>
                         <p className="text-xs text-gray-500 mt-1">
-                          扫码成功后，新账号会自动绑定该代理。代理在「代理管理」中维护。
+                          扫码成功后，新账号会自动绑定该代理。代理在「代理管理」中维护；
+                          <span className="font-semibold">切换节点会立即重新生成二维码</span>，旧码作废。
                         </p>
                       </div>
                       <div className="text-center">

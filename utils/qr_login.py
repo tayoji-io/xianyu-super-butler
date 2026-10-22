@@ -732,6 +732,23 @@ class QRLoginManager:
                 pass
             logger.info(f"服务端验证页已关闭: {session_id}")
 
+    def cancel_session(self, session_id: str) -> bool:
+        """主动取消一次扫码登录（切换节点、关闭弹窗时调用）。
+
+        前端切节点后会重新生成二维码，旧二维码对应的出口已经不对，继续留在
+        服务端只会让监控协程和人脸验证浏览器白跑几分钟。
+        """
+        session = self.sessions.pop(session_id, None)
+        if not session:
+            return False
+        session.status = 'cancelled'
+        try:
+            self._cancel_verification_task(session)
+        except Exception:
+            pass
+        logger.info(f"取消扫码登录会话: {session_id}")
+        return True
+
     def cleanup_expired_sessions(self):
         """清理过期会话"""
         expired_sessions = []
