@@ -14,10 +14,14 @@
 # 使用前请注意：默认账号是 admin / admin123，登录后立刻改密码。
 #
 # 启动：docker compose -f docker-compose.nas.yml up -d
+#
+# 镜像来自本 fork 的 GitHub Container Registry。首次发布后需要到
+# https://github.com/users/tayoji-io/packages/container/xianyu-super-butler
+# 把包设为 Public，否则 docker pull 需要先登录。
 
 services:
   xianyu-app:
-    image: ghcr.io/23star/xianyu-super-butler:latest
+    image: ghcr.io/tayoji-io/xianyu-super-butler:latest
     container_name: xianyu-super-butler
     restart: unless-stopped
     ports:

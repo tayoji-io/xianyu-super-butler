@@ -134,7 +134,7 @@ docker run -d --name xianyu-butler \
   -e ADMIN_USERNAME=admin \
   -e ADMIN_PASSWORD=改成你自己的密码 \
   --restart unless-stopped \
-  ghcr.io/23star/xianyu-super-butler:latest
+  ghcr.io/tayoji-io/xianyu-super-butler:latest
 ```
 
 浏览器打开 `http://服务器IP:8080` 即可。数据都在当前目录的 `data` / `logs` / `backups` 里，
@@ -142,10 +142,13 @@ docker run -d --name xianyu-butler \
 
 Windows PowerShell 把 `$(pwd)` 换成 `${PWD}`，续行的 `\` 换成反引号 `` ` ``。
 
+> 上面用的是本 fork 自己发布的镜像。首次发布后需要到 GitHub 的 Packages 页面把包设为
+> Public，否则 `docker pull` 需要先登录；发布方式见下方「发布自己的镜像」。
+
 ### Docker Compose（推荐长期使用）
 
 ```bash
-git clone https://github.com/23Star/xianyu-super-butler.git
+git clone https://github.com/tayoji-io/xianyu-super-butler.git
 cd xianyu-super-butler
 docker compose -f docker-compose.nas.yml up -d
 ```
@@ -154,6 +157,17 @@ docker compose -f docker-compose.nas.yml up -d
 Compose 的好处是配置写在文件里、改起来清楚，升级也只有一行命令。
 
 该配置不依赖 `.env`，管理员账号密码在 `docker-compose.nas.yml` 里的 `CHANGE_ME` 处直接改。
+
+### 发布自己的镜像（可选）
+
+仓库已带 `.github/workflows/docker-publish.yml`：推 `main`、打 `v*` 标签，或在 Actions 里
+手动 `Run workflow`，就会构建 `linux/amd64` + `linux/arm64` 并推送到
+`ghcr.io/tayoji-io/xianyu-super-butler`。
+
+首次发布后请打开
+`https://github.com/users/tayoji-io/packages/container/xianyu-super-butler`，
+在 Package settings → Danger Zone → Change visibility 里改成 **Public**，
+否则别人 `docker pull` 需要先登录。私有包还有存储/流量配额，这个镜像带 Chromium，建议公开。
 
 ### NAS 与低配设备（飞牛 fnOS、群晖、威联通、软路由、低配 VPS）
 
@@ -190,7 +204,7 @@ docker compose -f docker-compose-cn.yml up -d --build
 需要 Python 3.11+、Node.js 20+、npm。
 
 ```bash
-git clone https://github.com/23Star/xianyu-super-butler.git
+git clone https://github.com/tayoji-io/xianyu-super-butler.git
 cd xianyu-super-butler
 
 py -3.11 -m venv .venv
