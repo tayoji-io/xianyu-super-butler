@@ -11,7 +11,7 @@ import {
   , ChatAccount, ChatConversation, ChatMessage, ProductMaterial,
   ProductFilterRule, ProductDeleteRule, AutomationTaskRun,
   ProductAutomationResult, ProductDeletePreview, QuickPhrase,
-  AnnouncementPayload
+  AnnouncementPayload, ProxyItem
 } from '../types';
 
 // Auth
@@ -105,6 +105,10 @@ export const getAccountDetails = async (): Promise<AccountDetail[]> => {
     remark: item.remark,
     note: item.remark,
     pause_duration: item.pause_duration,
+    // fork:proxy 账号绑定的代理
+    proxy_id: item.proxy_id || '',
+    proxy_name: item.proxy_name || '',
+    proxy_url: item.proxy_url || '',
     username: item.username,
     login_password: item.login_password,
     show_browser: item.show_browser,
@@ -124,8 +128,11 @@ export const refreshAccountProfile = async (id: string): Promise<{ success: bool
   return post(`/cookies/${id}/refresh-profile`);
 };
 
-export const generateQRLogin = async (): Promise<{ success: boolean; session_id?: string; qr_code_url?: string }> => {
-  return post('/qr-login/generate');
+export const generateQRLogin = async (
+  proxyId?: string,
+): Promise<{ success: boolean; session_id?: string; qr_code_url?: string }> => {
+  // fork:proxy 扫码登录也走代理库条目，建号后自动绑定
+  return post('/qr-login/generate', { proxy_id: proxyId || '' });
 };
 
 export const checkQRLoginStatus = async (sessionId: string): Promise<any> => {
@@ -150,6 +157,45 @@ export const updateAccountAutoConfirm = async (id: string, autoConfirm: boolean)
 
 export const updateAccountPauseDuration = async (id: string, pauseDuration: number): Promise<any> => {
   return put(`/cookies/${id}/pause-duration`, { pause_duration: pauseDuration });
+};
+
+// fork:proxy 代理管理 + 账号绑定
+export const getProxies = async (): Promise<ProxyItem[]> => {
+  return get<ProxyItem[]>('/proxies');
+};
+
+export const createProxy = async (data: {
+  name?: string;
+  url: string;
+  remark?: string;
+  enabled?: boolean;
+}): Promise<ProxyItem> => {
+  return post<ProxyItem>('/proxies', data);
+};
+
+export const updateProxy = async (
+  id: string,
+  data: { name?: string; url: string; remark?: string; enabled?: boolean },
+): Promise<ProxyItem> => {
+  return put<ProxyItem>(`/proxies/${id}`, data);
+};
+
+export const deleteProxy = async (id: string): Promise<{ message: string; affected_accounts: string[] }> => {
+  return del<{ message: string; affected_accounts: string[] }>(`/proxies/${id}`);
+};
+
+/** 用代理访问一次闲鱼接口，验证是否可用 */
+export const checkProxy = async (url: string): Promise<{
+  ok: boolean;
+  message: string;
+  elapsed_ms: number;
+}> => {
+  return post<{ ok: boolean; message: string; elapsed_ms: number }>('/proxies/check', { url });
+};
+
+/** 给账号选择代理；proxyId 传空串表示改为直连 */
+export const updateAccountProxy = async (id: string, proxyId: string): Promise<any> => {
+  return put(`/cookies/${id}/proxy`, { proxy_id: proxyId });
 };
 
 export const updateAccountCookie = async (id: string, value: string): Promise<any> => {

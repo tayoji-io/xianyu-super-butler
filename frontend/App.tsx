@@ -23,6 +23,8 @@ const NotificationsAndLogs = lazy(() => import('./components/NotificationsAndLog
 const UserManagement = lazy(() => import('./components/UserManagement'));
 const About = lazy(() => import('./components/About'));
 const BuyerInteraction = lazy(() => import('./components/BuyerInteraction'));
+// fork:proxy 代理管理
+const ProxyManager = lazy(() => import('./components/ProxyManager'));
 
 const PageLoader = () => (
   <div className="page-loading">
@@ -34,6 +36,8 @@ const PageLoader = () => (
 const pageLabels: Record<string, string> = {
   dashboard: '总览',
   accounts: '账号管理',
+  // fork:proxy
+  proxies: '代理管理',
   items: '商品与发货',
   orders: '订单管理',
   'buyer-interaction': '买家互动',
@@ -579,6 +583,10 @@ const App: React.FC = () => {
           </section>
           <section hidden={activeTab !== 'accounts'}>
             <Suspense fallback={activeTab === 'accounts' ? <PageLoader /> : null}><AccountList /></Suspense>
+          </section>
+          {/* fork:proxy 代理管理 */}
+          <section hidden={activeTab !== 'proxies'}>
+            <Suspense fallback={activeTab === 'proxies' ? <PageLoader /> : null}><ProxyManager /></Suspense>
           </section>
           <section hidden={activeTab !== 'items'}>
             <Suspense fallback={activeTab === 'items' ? <PageLoader /> : null}><ItemList /></Suspense>

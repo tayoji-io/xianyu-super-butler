@@ -6,6 +6,7 @@ import {
   Box,
   ChevronUp,
   CreditCard,
+  Globe,
   KeyRound,
   LayoutDashboard,
   ListFilter,
@@ -97,6 +98,8 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, onLogout, mo
       label: '系统',
       items: [
         { id: 'users', icon: UserCog, label: '用户管理' },
+        // fork:proxy 代理管理（所有用户都可用，不属于管理员专属）
+        { id: 'proxies', icon: Globe, label: '代理管理' },
         { id: 'notifications', icon: BellRing, label: '通知与日志' },
         { id: 'settings', icon: Settings, label: '系统设置' },
         { id: 'about', icon: Info, label: '关于' },

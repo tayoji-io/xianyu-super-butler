@@ -1,8 +1,11 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { AccountDetail, AIReplySettings } from '../types';
+import { AccountDetail, AIReplySettings, ProxyItem } from '../types';
 import {
   getAccountDetails,
+  // fork:proxy 代理库 + 账号绑定
+  getProxies,
+  updateAccountProxy,
   updateAccountStatus,
   deleteAccount,
   generateQRLogin,
@@ -21,7 +24,7 @@ import {
   requestFreshCaptchaUrl,
 } from '../services/api';
 import { confirmAction, notify } from '../services/feedback';
-import {Power, Edit2, Trash2, QrCode, X, Check, Loader2, MessageSquare, RefreshCw, Save, User, Clock, Key, Eye, EyeOff, Bot, Settings, MapPin, Users, ShieldCheck} from 'lucide-react';
+import {Power, Edit2, Trash2, QrCode, X, Check, Loader2, MessageSquare, RefreshCw, Save, User, Clock, Key, Eye, EyeOff, Bot, Settings, MapPin, Users, ShieldCheck, Globe} from 'lucide-react';
 import { EmptyState, PageHeader, PageLoading } from './ui';
 
 type ModalType = 'edit' | 'ai-settings' | null;
@@ -39,6 +42,8 @@ const AccountList: React.FC = () => {
     verification_url?: string;
   }>>([]);
   const [showQRModal, setShowQRModal] = useState(false);
+  // fork:proxy 扫码登录使用的代理库条目（空=直连/环境变量默认）
+  const [qrProxyId, setQrProxyId] = useState('');
   const [qrCodeUrl, setQrCodeUrl] = useState<string>('');
   const [qrStatus, setQrStatus] = useState<string>('pending');
   const [qrMessage, setQrMessage] = useState<string>('');
@@ -70,11 +75,16 @@ const AccountList: React.FC = () => {
     cookie: '',
     auto_confirm: false,
     pause_duration: 0,
+    // fork:proxy 选中的代理 id（空串=直连）
+    proxy_id: '',
     username: '',
     login_password: '',
     show_browser: false,
     showLoginPassword: false,
   });
+
+  // fork:proxy 代理库列表，供编辑弹窗下拉选择
+  const [proxies, setProxies] = useState<ProxyItem[]>([]);
 
   // AI设置表单状态（字段必须齐全：PUT 是整行 INSERT OR REPLACE，
   // 少一个字段保存时就会被后端默认值静默覆盖）
@@ -139,6 +149,10 @@ const AccountList: React.FC = () => {
 
   useEffect(() => {
     loadAccounts();
+    // fork:proxy 代理库只在挂载时拉一次；代理本身很少变，编辑弹窗打开时用最新列表
+    getProxies()
+      .then(list => setProxies(Array.isArray(list) ? list : []))
+      .catch(() => setProxies([]));
     // 账号的 runtime_state 会随后端连接情况变化（连上、断线重连、进出风控），
     // 只在挂载时拉一次会让页面一直停在旧快照上 —— 表现为账号已在正常收发心跳，
     // 界面却仍显示「未运行」且状态点是灰的。与风控轮询保持同一节奏。
@@ -354,11 +368,17 @@ const AccountList: React.FC = () => {
       cookie: account.cookie || account.value || '',
       auto_confirm: account.auto_confirm || false,
       pause_duration: account.pause_duration || 0,
+      // fork:proxy
+      proxy_id: account.proxy_id || '',
       username: account.username || '',
       login_password: account.login_password || '',
       show_browser: account.show_browser || false,
       showLoginPassword: false,
     });
+    // 代理可能刚在「代理管理」里新增，打开弹窗时刷新一次
+    getProxies()
+      .then(list => setProxies(Array.isArray(list) ? list : []))
+      .catch(() => undefined);
     setActiveModal('edit');
   };
 
@@ -418,6 +438,9 @@ const AccountList: React.FC = () => {
         promises.push(updateAccountPauseDuration(editingAccount.id, editForm.pause_duration));
       }
 
+      // fork:proxy 代理变更会重启该账号任务，放到最后单独处理
+      const proxyChanged = (editForm.proxy_id || '') !== (editingAccount.proxy_id || '');
+
       // 更新登录信息
       if (
         editForm.username !== (editingAccount.username || '') ||
@@ -432,6 +455,17 @@ const AccountList: React.FC = () => {
       }
 
       await Promise.all(promises);
+
+      // fork:proxy 代理切换必须放在最后：它会让账号任务重启，
+      // 与 Cookie 更新并发会互相打断
+      if (proxyChanged) {
+        await updateAccountProxy(editingAccount.id, editForm.proxy_id || '');
+        // 换代理会重建连接，耗时接近一次重启，必须给个明确反馈
+        notify('代理已切换，账号正在按新出口重连', 'success');
+      } else {
+        notify('保存成功', 'success');
+      }
+
       setActiveModal(null);
       loadAccounts();
     } catch (error) {
@@ -466,8 +500,13 @@ const AccountList: React.FC = () => {
     setQrMessage('');
     setVerificationQrUrl('');
     setVerificationUrl('');
+    // 代理可能刚在「代理管理」里新增，打开弹窗时刷新一次
+    getProxies()
+      .then(list => setProxies(Array.isArray(list) ? list : []))
+      .catch(() => undefined);
     try {
-      const res = await generateQRLogin();
+      // fork:proxy 登录也走选中的代理，建号后自动绑定
+      const res = await generateQRLogin(qrProxyId);
       if (res.success && res.qr_code_url && res.session_id) {
         setQrCodeUrl(res.qr_code_url);
         setQrStatus('waiting');
@@ -698,6 +737,12 @@ const AccountList: React.FC = () => {
                    {blockedState && <span className="status-badge bg-red-100 text-red-700">{blockedState.verification_type === 'slider' ? '滑块验证' : blockedState.verification_type === 'face' ? '人脸验证' : '平台风控'}{blockedState.blocked ? ` · ${Math.max(1, Math.ceil(blockedState.remaining_seconds / 60))} 分钟` : ''}</span>}
                    {account.auto_confirm && <span className="status-badge status-badge-warning flex items-center gap-1.5"><MessageSquare className="w-3 h-3"/> 自动确认</span>}
                    {account.pause_duration > 0 && <span className="status-badge status-badge-info flex items-center gap-1.5"><Clock className="w-3 h-3"/> 暂停 {account.pause_duration} 分钟</span>}
+                   {/* fork:proxy 让用户一眼看出这个号走的是哪个出口 */}
+                   {account.proxy_id && (
+                     <span className="status-badge status-badge-info flex items-center gap-1.5" title={account.proxy_url || ''}>
+                       <Globe className="w-3 h-3"/> {account.proxy_name || '代理'}
+                     </span>
+                   )}
                 </div>
                 {/* 登录态过期给出明确动作，只挂一个徽标用户不知道该做什么 */}
                 {account.runtime_state === 'need_relogin' && (
@@ -824,6 +869,29 @@ const AccountList: React.FC = () => {
                   </div>
 
                   <div className="modal-body py-5">
+                      {/* fork:proxy 选择登录出口，避免「扫码 IP」与「日常 IP」不一致 */}
+                      <div className="mb-4">
+                        <label className="block text-sm font-bold text-gray-700 mb-2 flex items-center gap-2">
+                          <Globe className="w-4 h-4 text-blue-500" />
+                          登录代理
+                        </label>
+                        <select
+                          value={qrProxyId}
+                          onChange={(e) => setQrProxyId(e.target.value)}
+                          className="ios-input w-full rounded-md px-3 py-2.5"
+                        >
+                          <option value="">直连（使用服务器 IP）</option>
+                          {proxies.map((proxy) => (
+                            <option key={proxy.id} value={proxy.id} disabled={!proxy.enabled}>
+                              {proxy.name || proxy.url_display || proxy.url}
+                              {proxy.enabled ? '' : '（已停用）'}
+                            </option>
+                          ))}
+                        </select>
+                        <p className="text-xs text-gray-500 mt-1">
+                          扫码成功后，新账号会自动绑定该代理。代理在「代理管理」中维护。
+                        </p>
+                      </div>
                       <div className="text-center">
                           <div className="media-light-surface relative mx-auto flex h-60 w-60 items-center justify-center overflow-hidden rounded-md border border-gray-200 bg-gray-50">
                               {qrStatus === 'loading' && <Loader2 className="h-9 w-9 animate-spin text-amber-500" />}
@@ -985,6 +1053,31 @@ const AccountList: React.FC = () => {
                   className="ios-input w-full rounded-md px-3 py-2.5"
                 />
                 <p className="text-xs text-gray-500 mt-1">设置后会暂停处理该账号的订单，到时间后自动恢复</p>
+              </div>
+
+              {/* fork:proxy 出站代理 */}
+              <div>
+                <label className="block text-sm font-bold text-gray-700 mb-2 flex items-center gap-2">
+                  <Globe className="w-4 h-4 text-blue-500" />
+                  出站代理
+                </label>
+                <select
+                  value={editForm.proxy_id}
+                  onChange={(e) => setEditForm({ ...editForm, proxy_id: e.target.value })}
+                  className="ios-input w-full rounded-md px-3 py-2.5"
+                >
+                  <option value="">直连（使用服务器 IP）</option>
+                  {proxies.map((proxy) => (
+                    <option key={proxy.id} value={proxy.id} disabled={!proxy.enabled}>
+                      {proxy.name || proxy.url_display || proxy.url}
+                      {proxy.enabled ? '' : '（已停用）'}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-xs text-gray-500 mt-1">
+                  选择后该账号的聊天、登录、滑块验证、商品与订单操作全部走此代理；
+                  保存后账号会自动重启。代理在「代理管理」中维护。
+                </p>
               </div>
 
               {/* 登录信息 */}

@@ -29,6 +29,21 @@ export interface LoginResponse {
   captcha_required?: boolean;
 }
 
+// fork:proxy 代理库条目
+export interface ProxyItem {
+  id: string;
+  name: string;
+  url: string;
+  /** 后端脱敏后的展示值（密码显示为 ***） */
+  url_display?: string;
+  remark?: string;
+  enabled: boolean;
+  /** 有多少账号正在使用这个代理 */
+  account_count?: number;
+  created_at?: string;
+  updated_at?: string;
+}
+
 // Accounts
 export interface AccountDetail {
   id: string;
@@ -39,6 +54,10 @@ export interface AccountDetail {
   remark?: string;
   note?: string; // alias for remark
   pause_duration?: number;
+  // fork:proxy 账号绑定的代理（空串/未设置=直连）
+  proxy_id?: string;
+  proxy_name?: string;
+  proxy_url?: string;
   // 登录信息
   username?: string;
   login_password?: string;
