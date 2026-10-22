@@ -127,7 +127,7 @@
 
 ```bash
 docker run -d --name xianyu-butler \
-  -p 8080:8080 \
+  -p 9000:8080 \
   -v $(pwd)/data:/app/data \
   -v $(pwd)/logs:/app/logs \
   -v $(pwd)/backups:/app/backups \
@@ -137,7 +137,7 @@ docker run -d --name xianyu-butler \
   ghcr.io/tayoji-io/xianyu-super-butler:latest
 ```
 
-浏览器打开 `http://服务器IP:8080` 即可。数据都在当前目录的 `data` / `logs` / `backups` 里，
+浏览器打开 `http://服务器IP:9000` 即可（宿主 9000 映射到容器 8080，容器内端口不用改）。数据都在当前目录的 `data` / `logs` / `backups` 里，
 升级只需 `docker pull` 后重建容器，数据不丢。
 
 Windows PowerShell 把 `$(pwd)` 换成 `${PWD}`，续行的 `\` 换成反引号 `` ` ``。
@@ -168,6 +168,49 @@ Compose 的好处是配置写在文件里、改起来清楚，升级也只有一
 `https://github.com/users/tayoji-io/packages/container/xianyu-super-butler`，
 在 Package settings → Danger Zone → Change visibility 里改成 **Public**，
 否则别人 `docker pull` 需要先登录。私有包还有存储/流量配额，这个镜像带 Chromium，建议公开。
+
+### 打 tag 自动发版
+
+推 `main` 和推 tag 走同一个 workflow，但产出的标签不同：
+
+| 触发 | 产出的镜像标签 |
+| --- | --- |
+| 推 `main` | `latest` |
+| 推 `v3.3.1` | `v3.3.1`、`3.3.1` |
+
+注意 `latest` 只在默认分支构建，**打 tag 不会覆盖 `latest`**，所以线上固定版本请显式拉版本号。
+
+发版步骤：
+
+```bash
+# 1. 先把版本号改成一致（镜像版本、关于页、README 徽章）
+#    app/announcement.py 里的 APP_VERSION，以及 README 顶部的 Version 徽章
+# 2. 提交
+git add -A && git commit -m "release: 3.3.1"
+git push origin main
+
+# 3. 打 tag 并推送（tag 名必须以 v 开头，workflow 只监听 v*）
+git tag v3.3.1
+git push origin v3.3.1
+```
+
+推送后到 Actions → Publish Docker image 看构建结果。成功后可以：
+
+```bash
+docker pull ghcr.io/tayoji-io/xianyu-super-butler:3.3.1
+```
+
+在 `docker-compose.nas.yml` 里把 `:latest` 换成 `:3.3.1`，升级就不会被 `latest` 意外带跑。
+
+几个坑：
+
+- **tag 已存在**：先删再推
+  ```bash
+  git tag -d v3.3.1
+  git push origin :refs/tags/v3.3.1
+  ```
+- **版本号对不上**：`APP_VERSION` 还是旧值的话，「关于」页会显示旧版本，和镜像标签不一致。
+- **tag 不触发构建**：确认 tag 以 `v` 开头（`v3.3.1` 可以，`3.3.1` 不行），且 Actions 已启用。
 
 ### NAS 与低配设备（飞牛 fnOS、群晖、威联通、软路由、低配 VPS）
 
