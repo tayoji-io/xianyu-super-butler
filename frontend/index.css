@@ -1428,3 +1428,14 @@ aside nav:hover::-webkit-scrollbar-thumb {
     overflow-x: auto;
   }
 }
+
+/* 聊天自定义表情：Tailwind preflight 把 img 设成 block，会把表情挤成竖排，
+   这里显式恢复行内并做基线对齐。 */
+.chat-emoji {
+  display: inline-block;
+  width: 1.5rem;
+  height: 1.5rem;
+  margin: 0 2px;
+  vertical-align: -0.3em;
+  object-fit: contain;
+}

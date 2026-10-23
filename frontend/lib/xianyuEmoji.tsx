@@ -21,7 +21,7 @@ export function renderMessageContent(text: string): React.ReactNode {
           loading="lazy"
           referrerPolicy="no-referrer"
           draggable={false}
-          className="mx-0.5 inline-block h-6 w-6 align-text-bottom"
+          className="chat-emoji"
         />
       );
     }

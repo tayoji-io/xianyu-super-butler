@@ -1173,13 +1173,13 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
 
             <footer className="shrink-0 border-t border-[var(--border)] bg-[var(--surface)] px-4 py-3 sm:px-5">
               <div className="mb-2 flex items-center gap-4 text-[var(--text-muted)]">
-                <div className="relative">
+                <div className="relative flex h-6 items-center">
                   <button
                     ref={emojiButtonRef}
                     type="button"
                     title="表情"
                     onClick={() => setShowEmoji((value) => !value)}
-                    className={`hover:text-[var(--text)] ${showEmoji ? 'text-[var(--text)]' : ''}`}
+                    className={`flex h-6 w-6 items-center justify-center hover:text-[var(--text)] ${showEmoji ? 'text-[var(--text)]' : ''}`}
                   >
                     <Smile className="h-5 w-5" />
                   </button>
@@ -1216,7 +1216,7 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
                   title={uploadingImage ? '正在发送图片…' : '发送图片'}
                   onClick={() => imageInputRef.current?.click()}
                   disabled={uploadingImage}
-                  className="hover:text-[var(--text)] disabled:cursor-not-allowed disabled:opacity-50"
+                  className="flex h-6 w-6 items-center justify-center hover:text-[var(--text)] disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {uploadingImage ? <Loader2 className="h-5 w-5 animate-spin" /> : <Image className="h-5 w-5" />}
                 </button>
@@ -1227,12 +1227,12 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
                   className="hidden"
                   onChange={handleImageSelected}
                 />
-                <div className="relative">
+                <div className="relative flex h-6 items-center">
                   <button
                     type="button"
                     title="快捷短语"
                     onClick={() => setShowPhrases(value => !value)}
-                    className={`hover:text-[var(--text)] ${showPhrases ? 'text-[var(--text)]' : ''}`}
+                    className={`flex h-6 w-6 items-center justify-center hover:text-[var(--text)] ${showPhrases ? 'text-[var(--text)]' : ''}`}
                   >
                     <Zap className="h-5 w-5" />
                   </button>
