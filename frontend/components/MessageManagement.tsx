@@ -27,6 +27,8 @@ import {
   QuickPhrase,
 } from '../types';
 import { renderRichText } from '../lib/emojiMap';
+import { renderMessageContent } from '../lib/xianyuEmoji';
+import { XIANYU_EMOJI_LIST } from '../lib/xianyuEmojiData';
 import {
   batchCreateMessageFilters,
   batchDeleteMessageFilters,
@@ -220,6 +222,10 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
   const [sending, setSending] = useState(false);
   const [uploadingImage, setUploadingImage] = useState(false);
   const imageInputRef = useRef<HTMLInputElement>(null);
+  const [showEmoji, setShowEmoji] = useState(false);
+  const composerRef = useRef<HTMLTextAreaElement>(null);
+  const emojiPanelRef = useRef<HTMLDivElement>(null);
+  const emojiButtonRef = useRef<HTMLButtonElement>(null);
   // 消息列表滚动锚定：图片加载会撑高内容，只滚一次会停在半路
   const messagesScrollRef = useRef<HTMLDivElement>(null);
   const messagesContentRef = useRef<HTMLDivElement>(null);
@@ -733,6 +739,31 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
     void useQuickPhrase(phrase.id).catch(() => undefined);
   };
 
+  const insertEmoji = (code: string) => {
+    const el = composerRef.current;
+    const start = el?.selectionStart ?? draft.length;
+    const end = el?.selectionEnd ?? draft.length;
+    setDraft(draft.slice(0, start) + code + draft.slice(end));
+    window.requestAnimationFrame(() => {
+      if (!el) return;
+      el.focus();
+      const position = start + code.length;
+      el.setSelectionRange(position, position);
+    });
+  };
+
+  useEffect(() => {
+    if (!showEmoji) return undefined;
+    const onPointerDown = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (emojiPanelRef.current?.contains(target)) return;
+      if (emojiButtonRef.current?.contains(target)) return;
+      setShowEmoji(false);
+    };
+    document.addEventListener('mousedown', onPointerDown);
+    return () => document.removeEventListener('mousedown', onPointerDown);
+  }, [showEmoji]);
+
   const handleImageSelected = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     // 清空 value，允许连续选同一张图
@@ -1119,7 +1150,7 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
                                 />
                               ))}
                               {message.text && (
-                                <p className="whitespace-pre-wrap break-words">{renderRichText(message.text)}</p>
+                                <p className="whitespace-pre-wrap break-words">{renderMessageContent(message.text)}</p>
                               )}
                             </div>
                             {message.isSelf && renderAvatar(
@@ -1142,9 +1173,44 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
 
             <footer className="shrink-0 border-t border-[var(--border)] bg-[var(--surface)] px-4 py-3 sm:px-5">
               <div className="mb-2 flex items-center gap-4 text-[var(--text-muted)]">
-                <button type="button" title="表情（暂未开放）" className="hover:text-[var(--text)]">
-                  <Smile className="h-5 w-5" />
-                </button>
+                <div className="relative">
+                  <button
+                    ref={emojiButtonRef}
+                    type="button"
+                    title="表情"
+                    onClick={() => setShowEmoji((value) => !value)}
+                    className={`hover:text-[var(--text)] ${showEmoji ? 'text-[var(--text)]' : ''}`}
+                  >
+                    <Smile className="h-5 w-5" />
+                  </button>
+                  {showEmoji && (
+                    <div
+                      ref={emojiPanelRef}
+                      className="absolute bottom-8 left-0 z-20 w-[340px] rounded-lg border border-[var(--border)] bg-[var(--surface)] p-2 shadow-lg"
+                    >
+                      <div className="grid max-h-64 grid-cols-8 gap-1 overflow-y-auto">
+                        {XIANYU_EMOJI_LIST.map((emoji) => (
+                          <button
+                            key={emoji.code}
+                            type="button"
+                            title={emoji.name}
+                            onClick={() => insertEmoji(emoji.code)}
+                            className="flex h-9 w-9 items-center justify-center rounded-md hover:bg-[var(--surface-hover)]"
+                          >
+                            <img
+                              src={emoji.url}
+                              alt={emoji.name}
+                              loading="lazy"
+                              referrerPolicy="no-referrer"
+                              draggable={false}
+                              className="h-7 w-7 object-contain"
+                            />
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
                 <button
                   type="button"
                   title={uploadingImage ? '正在发送图片…' : '发送图片'}
@@ -1199,6 +1265,7 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
               </div>
               <div className="flex items-end gap-2 sm:gap-3">
                 <textarea
+                  ref={composerRef}
                   value={draft}
                   onChange={(event) => setDraft(event.target.value)}
                   onKeyDown={(event) => {

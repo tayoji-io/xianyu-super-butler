@@ -154,6 +154,22 @@ IM 的会话/消息接口不返回头像（`avatar` / `avatarUrl` / `senderAvata
 - 限制：仅 `image/*`、单张不超过 10MB；
 - 失败会按 409/503/502 透传，前端提示具体原因。
 
-## 9. 后续可做
+## 9. 表情
+
+闲鱼的自定义表情在 IM 协议里传的是文字码（`[微笑]`、`[尊嘟假嘟]`），图片是
+客户端资源。网页端通过 `mtop.taobao.idlemessage.face.emoji.load` 一次性拉取
+全部表情，共 126 个（含 120×120 动图）。
+
+- 用账号 Cookie + Patchright 打开 `https://www.goofish.com/im`，拦截该接口响应；
+- 生成 `frontend/lib/xianyuEmojiData.ts`（code / name / url）；
+- 消息渲染：`renderMessageContent()` 把 `[码]` 换成图片，未收录的码回落到
+  `emojiMap.ts` 的 Unicode 映射；
+- 输入框的表情面板：126 个表情的网格，点击按光标位置插入文字码，发送后对方
+  客户端会渲染成表情；
+- 表情图片加 `referrerPolicy="no-referrer"`，避免 alicdn 防盗链。
+
+表情更新时重新抓一次接口即可，数据文件是自动生成的。
+
+## 10. 后续可做
 
 暂无。
