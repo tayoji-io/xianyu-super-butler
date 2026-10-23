@@ -226,6 +226,8 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const emojiPanelRef = useRef<HTMLDivElement>(null);
   const emojiButtonRef = useRef<HTMLButtonElement>(null);
+  const phrasesPanelRef = useRef<HTMLDivElement>(null);
+  const phrasesButtonRef = useRef<HTMLButtonElement>(null);
   // 消息列表滚动锚定：图片加载会撑高内容，只滚一次会停在半路
   const messagesScrollRef = useRef<HTMLDivElement>(null);
   const messagesContentRef = useRef<HTMLDivElement>(null);
@@ -764,6 +766,19 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
     return () => document.removeEventListener('mousedown', onPointerDown);
   }, [showEmoji]);
 
+  // 快捷短语弹层同样支持点外部关闭，并且和表情面板互斥
+  useEffect(() => {
+    if (!showPhrases) return undefined;
+    const onPointerDown = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (phrasesPanelRef.current?.contains(target)) return;
+      if (phrasesButtonRef.current?.contains(target)) return;
+      setShowPhrases(false);
+    };
+    document.addEventListener('mousedown', onPointerDown);
+    return () => document.removeEventListener('mousedown', onPointerDown);
+  }, [showPhrases]);
+
   const handleImageSelected = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     // 清空 value，允许连续选同一张图
@@ -1178,7 +1193,10 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
                     ref={emojiButtonRef}
                     type="button"
                     title="表情"
-                    onClick={() => setShowEmoji((value) => !value)}
+                    onClick={() => {
+                      setShowEmoji((value) => !value);
+                      setShowPhrases(false);
+                    }}
                     className={`flex h-6 w-6 items-center justify-center hover:text-[var(--text)] ${showEmoji ? 'text-[var(--text)]' : ''}`}
                   >
                     <Smile className="h-5 w-5" />
@@ -1229,15 +1247,22 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
                 />
                 <div className="relative flex h-6 items-center">
                   <button
+                    ref={phrasesButtonRef}
                     type="button"
                     title="快捷短语"
-                    onClick={() => setShowPhrases(value => !value)}
+                    onClick={() => {
+                      setShowPhrases(value => !value);
+                      setShowEmoji(false);
+                    }}
                     className={`flex h-6 w-6 items-center justify-center hover:text-[var(--text)] ${showPhrases ? 'text-[var(--text)]' : ''}`}
                   >
                     <Zap className="h-5 w-5" />
                   </button>
                   {showPhrases && (
-                    <div className="absolute bottom-8 left-0 z-20 max-h-72 w-80 overflow-y-auto rounded-lg border border-[var(--border)] bg-[var(--surface)] p-2 shadow-lg">
+                    <div
+                      ref={phrasesPanelRef}
+                      className="absolute bottom-8 left-0 z-20 max-h-72 w-80 overflow-y-auto rounded-lg border border-[var(--border)] bg-[var(--surface)] p-2 shadow-lg"
+                    >
                       {quickPhrases.length === 0 ? (
                         <p className="px-2 py-3 text-xs text-gray-500">
                           还没有快捷短语，可在「设置」中添加。
