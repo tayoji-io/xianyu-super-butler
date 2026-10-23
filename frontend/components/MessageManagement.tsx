@@ -310,6 +310,15 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
     setConversations((current) => current.map((item) => (
       item.cid === conversation.cid ? { ...item, unreadCount: 0 } : item
     )));
+    // 先清空：否则新会话的第一帧会带着上一个会话的消息，而且后续 merge 会把
+    // 两边的消息混在一起
+    setMessages([]);
+    pinnedToBottomRef.current = true;
+    paginationReadyRef.current = false;
+    loadingOlderRef.current = false;
+    setOlderCursor(null);
+    setHasMoreOlder(false);
+    setLoadingOlder(false);
     setActiveCid(conversation.cid);
     setMobilePane('chat');
   };
@@ -408,9 +417,12 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
       setMessages([]);
       return;
     }
+    const requestedCid = activeCid;
     if (!silent) setMessagesLoading(true);
     try {
-      const result = await getChatMessages(activeAccountId, activeCid, undefined, 50, fresh);
+      const result = await getChatMessages(activeAccountId, requestedCid, undefined, 50, fresh);
+      // 请求期间用户切了会话：这个响应属于旧会话，丢弃，不能合进新列表
+      if (activeCidRef.current !== requestedCid) return;
       setMessages((previous) => mergeMessages(result.messages || [], previous));
       // 分页游标只在进入会话的第一次加载时初始化；后续轮询/推送刷新不能重置，
       // 否则用户翻过的历史会被「最新一页」的游标覆盖，反复加载同一段。
@@ -588,11 +600,13 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
     if (loadingOlderRef.current || !hasMoreOlder || olderCursor == null) return;
     if (!activeAccountId || !activeCid) return;
 
+    const requestedCid = activeCid;
     loadingOlderRef.current = true;
     setLoadingOlder(true);
 
     try {
-      const result = await getChatMessages(activeAccountId, activeCid, olderCursor, 50);
+      const result = await getChatMessages(activeAccountId, requestedCid, olderCursor, 50);
+      if (activeCidRef.current !== requestedCid) return;
       setMessages((previous) => mergeMessages(result.messages || [], previous));
       setOlderCursor(result.nextCursor ?? null);
       setHasMoreOlder(Boolean(result.hasMore && result.nextCursor));
@@ -629,8 +643,9 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
     if (pinnedToBottomRef.current) scrollMessagesToBottom();
   }, [messages]);
 
-  // 切会话重新贴底，并重置历史分页
+  // 切会话重新贴底，并重置历史分页；自动选中会话（非点击）时也走这里清空
   useEffect(() => {
+    setMessages([]);
     pinnedToBottomRef.current = true;
     paginationReadyRef.current = false;
     loadingOlderRef.current = false;
