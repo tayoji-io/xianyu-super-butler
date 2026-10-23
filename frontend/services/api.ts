@@ -1271,12 +1271,13 @@ export const getChatAccounts = async (): Promise<ChatAccount[]> => {
 export const getChatConversations = async (
   cookieId: string,
   cursor?: number,
-  limit: number = 30
+  limit: number = 30,
+  fresh: boolean = false,
 ): Promise<{ conversations: ChatConversation[]; hasMore: boolean; nextCursor?: number }> => {
   const response = await get<{
     success: boolean;
     data: { conversations: ChatConversation[]; hasMore: boolean; nextCursor?: number };
-  }>(`/chat/conversations/${encodeURIComponent(cookieId)}`, { cursor, limit });
+  }>(`/chat/conversations/${encodeURIComponent(cookieId)}`, { cursor, limit, fresh: fresh || undefined });
   return response.data;
 };
 
@@ -1284,14 +1285,15 @@ export const getChatMessages = async (
   cookieId: string,
   cid: string,
   cursor?: number,
-  limit: number = 50
+  limit: number = 50,
+  fresh: boolean = false,
 ): Promise<{ messages: ChatMessage[]; hasMore: boolean; nextCursor?: number }> => {
   const response = await get<{
     success: boolean;
     data: { messages: ChatMessage[]; hasMore: boolean; nextCursor?: number };
   }>(
     `/chat/messages/${encodeURIComponent(cookieId)}/${encodeURIComponent(cid)}`,
-    { cursor, limit }
+    { cursor, limit, fresh: fresh || undefined }
   );
   return response.data;
 };

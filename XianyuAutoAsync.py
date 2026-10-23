@@ -10254,7 +10254,22 @@ class XianyuLive:
             # 格式化消息时间
             msg_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(create_time/1000))
 
+            # fork:realtime 消息一落地就通知网页，省掉最多 10 秒的轮询等待。
+            # 只发会话级事件，具体内容由前端再拉一次（带 fresh 绕过缓存）。
+            try:
+                from app.chat_events import chat_event_bus
 
+                chat_event_bus.publish({
+                    "type": "message",
+                    "cookie_id": self.cookie_id,
+                    "user_id": self.user_id,
+                    "chat_id": chat_id,
+                    "direction": "out" if send_user_id == self.myid else "in",
+                    "item_id": item_id,
+                    "preview": str(send_message)[:80],
+                })
+            except Exception:
+                pass
 
             # 判断消息方向
             if send_user_id == self.myid:

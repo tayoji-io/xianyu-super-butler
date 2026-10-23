@@ -1354,10 +1354,13 @@ class _AccountRequestDedup:
         while len(self._cache) > self.MAX_ENTRIES:
             self._cache.popitem(last=False)
 
-    async def run(self, key: str, factory):
-        cached = self._cache.get(key)
-        if cached and cached[0] > time.monotonic():
-            return cached[1]
+    async def run(self, key: str, factory, use_cache: bool = True):
+        # use_cache=False 用于「用户刚发完消息 / 收到推送」后的强制刷新：
+        # 只跳过读缓存，仍会合并并发请求并把新结果写回缓存。
+        if use_cache:
+            cached = self._cache.get(key)
+            if cached and cached[0] > time.monotonic():
+                return cached[1]
 
         pending = self._pending.get(key)
         if pending is not None and not pending.done():
@@ -1484,11 +1487,58 @@ async def get_chat_accounts(current_user: Dict[str, Any] = Depends(get_current_u
     return {"success": True, "data": result}
 
 
+@app.get("/chat/events")
+async def chat_events(request: Request, current_user: Dict[str, Any] = Depends(get_current_user)):
+    """聊天事件流（SSE）。
+
+    消息到达服务端时立刻通知网页刷新，不必等下一轮 10 秒轮询。
+    账号任务和 uvicorn 不在同一个事件循环里，事件总线内部用
+    call_soon_threadsafe 跨线程投递。
+    """
+    from app.chat_events import chat_event_bus
+
+    loop = asyncio.get_running_loop()
+    queue = chat_event_bus.subscribe(loop)
+    user_id = current_user['user_id']
+
+    async def event_stream():
+        try:
+            yield ": connected\n\n"
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=15)
+                except asyncio.TimeoutError:
+                    # 心跳注释行，避免代理把空闲连接掐掉
+                    yield ": ping\n\n"
+                    continue
+
+                # 只把事件推给拥有该账号的用户，避免多用户之间串数据
+                if event.get("user_id") is not None and event.get("user_id") != user_id:
+                    continue
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+        finally:
+            chat_event_bus.unsubscribe(queue)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            # nginx 默认会缓冲响应，SSE 必须关掉，否则事件要攒一批才到
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 @app.get("/chat/conversations/{cookie_id}")
 async def get_chat_conversations(
     cookie_id: str,
     cursor: Optional[int] = Query(None),
     limit: int = Query(30, ge=1, le=100),
+    fresh: bool = Query(False, description="跳过结果缓存，强制向闲鱼取最新数据"),
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
     _get_owned_chat_account(cookie_id, current_user)
@@ -1500,6 +1550,7 @@ async def get_chat_conversations(
             cookie_id,
             lambda instance: instance.get_im_conversations(cursor, limit),
         ),
+        use_cache=not fresh,
     )
     if isinstance(body, dict) and (body.get("reason") or body.get("code") == "400600001"):
         reason = body.get("developerMessage") or body.get("reason") or body.get("code")
@@ -1532,6 +1583,7 @@ async def get_chat_messages(
     cid: str,
     cursor: Optional[int] = Query(None),
     limit: int = Query(50, ge=1, le=100),
+    fresh: bool = Query(False, description="跳过结果缓存，强制向闲鱼取最新数据"),
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
     _get_owned_chat_account(cookie_id, current_user)
@@ -1541,6 +1593,7 @@ async def get_chat_messages(
             cookie_id,
             lambda instance: instance.get_im_messages(cid, cursor, limit),
         ),
+        use_cache=not fresh,
     )
     if isinstance(body, dict) and body.get("reason"):
         reason = body.get("developerMessage") or body.get("reason")

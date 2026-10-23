@@ -203,6 +203,11 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
   const searchInputTouchedRef = useRef(false);
   const activeCidRef = useRef('');
   const readWatermarksRef = useRef<ReadWatermarks>(loadReadWatermarks());
+  // fork:realtime SSE 推送：消息一到就刷新，不用等下一轮轮询
+  const realtimeTimerRef = useRef<number | null>(null);
+  const realtimePendingRef = useRef({ chat: false });
+  const loadMessagesRef = useRef<(silent?: boolean, fresh?: boolean) => Promise<void>>(async () => {});
+  const loadConversationsRef = useRef<(silent?: boolean, fresh?: boolean) => Promise<void>>(async () => {});
 
   const [filters, setFilters] = useState<MessageFilter[]>([]);
   const [filtersLoading, setFiltersLoading] = useState(true);
@@ -295,14 +300,14 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
     }
   };
 
-  const loadConversations = async (silent = false) => {
+  const loadConversations = async (silent = false, fresh = false) => {
     if (!activeAccountId) {
       setConversations([]);
       return;
     }
     if (!silent) setConversationsLoading(true);
     try {
-      const result = await getChatConversations(activeAccountId);
+      const result = await getChatConversations(activeAccountId, undefined, 30, fresh);
       const incoming = result.conversations || [];
       const currentCid = activeCidRef.current;
       const nextCid = incoming.some((conversation) => conversation.cid === currentCid)
@@ -341,14 +346,14 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
     }
   };
 
-  const loadMessages = async (silent = false) => {
+  const loadMessages = async (silent = false, fresh = false) => {
     if (!activeAccountId || !activeCid) {
       setMessages([]);
       return;
     }
     if (!silent) setMessagesLoading(true);
     try {
-      const result = await getChatMessages(activeAccountId, activeCid);
+      const result = await getChatMessages(activeAccountId, activeCid, undefined, 50, fresh);
       setMessages(result.messages || []);
     } catch (error) {
       if (!silent) notify(`加载聊天记录失败：${(error as Error).message}`, 'error');
@@ -402,6 +407,86 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
   useEffect(() => {
     if (isActive) void loadMessages();
   }, [isActive, activeAccountId, activeCid]);
+
+  // 把最新的加载函数存进 ref，供 SSE 回调使用（避免每次渲染都重连）
+  useEffect(() => {
+    loadMessagesRef.current = loadMessages;
+    loadConversationsRef.current = loadConversations;
+  });
+
+  useEffect(() => {
+    if (!isActive || view !== 'messages' || !activeAccountId) return undefined;
+
+    const controller = new AbortController();
+    let closed = false;
+    let retryTimer: number | null = null;
+
+    // 连续多条消息时合并成一次刷新，避免每个事件都打一次闲鱼接口
+    const scheduleRefresh = (event: any) => {
+      if (!event || event.cookie_id !== activeAccountId) return;
+      if (event.chat_id && event.chat_id === activeCidRef.current) {
+        realtimePendingRef.current.chat = true;
+      }
+      if (realtimeTimerRef.current) window.clearTimeout(realtimeTimerRef.current);
+      realtimeTimerRef.current = window.setTimeout(() => {
+        realtimeTimerRef.current = null;
+        const refreshChat = realtimePendingRef.current.chat;
+        realtimePendingRef.current = { chat: false };
+        // fresh=true 绕过服务端 3 秒结果缓存，拿到刚到的消息
+        void loadConversationsRef.current(true, true);
+        if (refreshChat) void loadMessagesRef.current(true, true);
+      }, 200);
+    };
+
+    const connect = async () => {
+      if (closed) return;
+      try {
+        const token = localStorage.getItem('auth_token') || '';
+        const response = await fetch('/chat/events', {
+          headers: { Authorization: `Bearer ${token}` },
+          signal: controller.signal,
+        });
+        if (!response.ok || !response.body) throw new Error(`SSE ${response.status}`);
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        while (!closed) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          let sep = buffer.indexOf('\n\n');
+          while (sep >= 0) {
+            const chunk = buffer.slice(0, sep);
+            buffer = buffer.slice(sep + 2);
+            const dataLine = chunk.split('\n').find(line => line.startsWith('data:'));
+            if (dataLine) {
+              try {
+                scheduleRefresh(JSON.parse(dataLine.slice(5).trim()));
+              } catch {
+                // 坏事件忽略，不影响后续
+              }
+            }
+            sep = buffer.indexOf('\n\n');
+          }
+        }
+      } catch {
+        // 断线、代理掐连接：稍后重连；期间仍有 10 秒轮询兜底
+      }
+      if (!closed) retryTimer = window.setTimeout(connect, 3000);
+    };
+
+    void connect();
+    return () => {
+      closed = true;
+      controller.abort();
+      if (retryTimer) window.clearTimeout(retryTimer);
+      if (realtimeTimerRef.current) {
+        window.clearTimeout(realtimeTimerRef.current);
+        realtimeTimerRef.current = null;
+      }
+    };
+  }, [isActive, view, activeAccountId]);
 
   useEffect(() => {
     if (!isActive || view !== 'messages' || !activeAccountId) return undefined;
@@ -463,7 +548,8 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
         text,
       });
       setDraft('');
-      await Promise.all([loadMessages(true), loadConversations(true)]);
+      // 刚发的消息不能被服务端 3 秒缓存挡住，必须绕过缓存
+      await Promise.all([loadMessages(true, true), loadConversations(true, true)]);
       notify('消息已发送', 'success');
     } catch (error) {
       notify(`发送失败：${(error as Error).message}`, 'error');
