@@ -595,17 +595,27 @@ class XianyuSliderStealth:
             existing = self.context.pages
             self.page = existing[0] if existing else self.context.new_page()
 
-            # 页面级 CDP 指纹覆盖（Ydisks 方案）：context 级 user_agent 只改
-            # UA 字符串，navigator.userAgentData 的高熵值仍会泄漏无头特征。
-            # CDP session 必须保持附着（存到实例属性防回收），detach 后会还原。
+            # 页面级 CDP 指纹覆盖只在无头 Chromium 下需要：它的原生 UA 带
+            # "HeadlessChrome"，必须改掉。有头系统 Chrome 的 UA/Client Hints
+            # 本来就是一致的，强行改成 Windows 反而制造矛盾 —— macOS 上会出现
+            # UA 是 Windows、navigator.platform 是 MacIntel、字体/GPU 是 macOS，
+            # nc 很容易据此判定环境伪造。
             try:
-                from utils.slider_ydisks import apply_page_fingerprint_override
-                self._fingerprint_cdp = apply_page_fingerprint_override(
-                    self.context, self.page)
-                if self._fingerprint_cdp:
+                real_ua = self.page.evaluate("navigator.userAgent") or ""
+                if "HeadlessChrome" in real_ua:
+                    from utils.slider_ydisks import apply_page_fingerprint_override
+                    self._fingerprint_cdp = apply_page_fingerprint_override(
+                        self.context, self.page)
+                    if self._fingerprint_cdp:
+                        logger.info(
+                            f"【{self.pure_user_id}】页面级指纹覆盖已生效"
+                            f"（无头 Chromium 场景）"
+                        )
+                else:
+                    self._fingerprint_cdp = None
                     logger.info(
-                        f"【{self.pure_user_id}】页面级指纹覆盖已生效"
-                        f"（UA/Client Hints/navigator.userAgentData 三处一致）"
+                        f"【{self.pure_user_id}】真实 UA 已是正常 Chrome，"
+                        f"跳过页面级 UA 覆盖（保持平台/UA 一致）"
                     )
             except Exception as fp_err:
                 self._fingerprint_cdp = None

@@ -403,7 +403,7 @@ def _brands_from_sec_ch_ua(sec_ch_ua):
     return brands
 
 
-def apply_page_fingerprint_override(context, page, ua=None, sec_ch_ua=None):
+def apply_page_fingerprint_override(context, page, ua=None, sec_ch_ua=None, platform="Win32"):
     """页面级 CDP 指纹覆盖：UA + Client Hints 元数据一次到位。
 
     context 级 user_agent 只改 UA 字符串，navigator.userAgentData 仍会
@@ -444,6 +444,9 @@ def apply_page_fingerprint_override(context, page, ua=None, sec_ch_ua=None):
         cdp_session.send("Emulation.setUserAgentOverride", {
             "userAgent": ua,
             "userAgentMetadata": metadata,
+            # 只改 UA 不改 platform，会让 navigator.platform 与 UA 对不上
+            "platform": platform,
+            "acceptLanguage": "zh-CN,zh;q=0.9,en;q=0.8",
         })
         return cdp_session
     except Exception:

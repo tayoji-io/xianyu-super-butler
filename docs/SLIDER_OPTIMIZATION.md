@@ -42,6 +42,27 @@
 5. **长期 0 通过**：换一个干净的浏览器 profile（`browser_data/slider_<账号id>` 改名或删除）
    再试，老 profile 可能已经带上了负面标记。
 
+## 代理与指纹
+
+滑块、人工验证、订单详情、浏览器池都走**账号代理**，并使用**账号固定指纹**：
+
+| 操作 | 代理 | 指纹 |
+| --- | --- | --- |
+| 滑块 `XianyuSliderStealth` | `playwright_proxy(proxy_url)`，配置错误直接失败不回退 | 账号固定视口/DPR/配色/时区 + 独立持久化 profile + Patchright + 真实 Chrome UA |
+| 人工验证 `manual_captcha` | `get_cookie_proxy()` | 同上 + `storage_state` |
+| 订单详情 `order_detail_fetcher` | `playwright_proxy(proxy_url)` | `storage_state` + 移动端 UA/视口（h5 页面必须） |
+| 浏览器池 `browser_pool` | `get_cookie_proxy()` | `context_options` + `storage_state` + 启动参数 |
+| 图片上传 / 卖家接口 / 擦亮 / 扫码 | aiohttp/httpx 走代理 | 不涉及浏览器 |
+
+**已修的指纹矛盾**：有头系统 Chrome 的原生 UA 本来就和 Client Hints 一致，
+但旧代码仍用 CDP 把 UA 强制改成 Windows。macOS 上于是出现
+`UA=Windows` + `navigator.platform=MacIntel` + 字体/GPU=macOS 的组合，
+是明确的伪造特征。现在只有真实 UA 带 `HeadlessChrome` 时才覆盖，
+并且同时设置 `platform`/`acceptLanguage`，保证 JS 内部一致。
+
+注意：滑块的持久化 profile 是 `browser_data/slider_<账号id>`，与主浏览器池
+的 profile 分开，存储互不影响，但视口/DPR/配色等身份参数是同一套。
+
 ## 后续可做
 
 - 自动 profile 轮换：连续失败 N 次后自动换目录；
