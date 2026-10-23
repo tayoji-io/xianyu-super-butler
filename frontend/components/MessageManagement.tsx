@@ -46,6 +46,21 @@ import {
 import { confirmAction, notify } from '../services/feedback';
 import { EmptyState, SectionHeader } from './ui';
 
+// 同一会话的消息会从「最新一页」和「历史分页」两个方向合入，按 messageId 去重
+// 再按时间排序；没有 messageId 时用时间+方向+内容兜底。
+const messageKey = (message: ChatMessage): string =>
+  message.messageId
+  || `${message.time}-${message.isSelf ? 's' : 'o'}-${message.text || ''}-${(message.images || []).join(',')}`;
+
+const mergeMessages = (incoming: ChatMessage[], existing: ChatMessage[]): ChatMessage[] => {
+  const merged = new Map<string, ChatMessage>();
+  for (const message of existing) merged.set(messageKey(message), message);
+  for (const message of incoming) merged.set(messageKey(message), message);
+  const list = Array.from(merged.values()).sort((a, b) => a.time - b.time);
+  // 长时间挂着页面也不无限增长
+  return list.length > 2000 ? list.slice(list.length - 2000) : list;
+};
+
 type View = 'messages' | 'filters';
 type MobilePane = 'list' | 'chat';
 
@@ -194,6 +209,10 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
   const [accountsLoading, setAccountsLoading] = useState(true);
   const [conversationsLoading, setConversationsLoading] = useState(false);
   const [messagesLoading, setMessagesLoading] = useState(false);
+  // 历史消息分页：后端支持 cursor，之前前端只拉最新 50 条
+  const [olderCursor, setOlderCursor] = useState<number | null>(null);
+  const [hasMoreOlder, setHasMoreOlder] = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
   const [draft, setDraft] = useState('');
   // 快捷短语：人工客服常用话术
   const [quickPhrases, setQuickPhrases] = useState<QuickPhrase[]>([]);
@@ -203,6 +222,8 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
   const messagesScrollRef = useRef<HTMLDivElement>(null);
   const messagesContentRef = useRef<HTMLDivElement>(null);
   const pinnedToBottomRef = useRef(true);
+  const loadingOlderRef = useRef(false);
+  const paginationReadyRef = useRef(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const searchInputTouchedRef = useRef(false);
   const activeCidRef = useRef('');
@@ -387,7 +408,14 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
     if (!silent) setMessagesLoading(true);
     try {
       const result = await getChatMessages(activeAccountId, activeCid, undefined, 50, fresh);
-      setMessages(result.messages || []);
+      setMessages((previous) => mergeMessages(result.messages || [], previous));
+      // 分页游标只在进入会话的第一次加载时初始化；后续轮询/推送刷新不能重置，
+      // 否则用户翻过的历史会被「最新一页」的游标覆盖，反复加载同一段。
+      if (!paginationReadyRef.current) {
+        paginationReadyRef.current = true;
+        setOlderCursor(result.nextCursor ?? null);
+        setHasMoreOlder(Boolean(result.hasMore && result.nextCursor));
+      }
     } catch (error) {
       if (isTransientError(error)) {
         if (!silent) notifyTransient('账号正在重连，聊天记录稍后自动刷新');
@@ -551,21 +579,61 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
     if (container) container.scrollTop = 0;
   };
 
+  // 加载更早的一页。column-reverse 下新增内容会撑高列表，需要补偿 scrollTop，
+  // 否则视口会从用户正在看的位置跳走。
+  const loadOlderMessages = async () => {
+    if (loadingOlderRef.current || !hasMoreOlder || olderCursor == null) return;
+    if (!activeAccountId || !activeCid) return;
+
+    loadingOlderRef.current = true;
+    setLoadingOlder(true);
+
+    try {
+      const result = await getChatMessages(activeAccountId, activeCid, olderCursor, 50);
+      setMessages((previous) => mergeMessages(result.messages || [], previous));
+      setOlderCursor(result.nextCursor ?? null);
+      setHasMoreOlder(Boolean(result.hasMore && result.nextCursor));
+
+      // 不手动补偿 scrollTop：column-reverse 容器里 Chrome 的滚动锚定会自动
+      // 把视口固定在原来那条消息上（实测加载 20 条历史后位移 0px）。再手动按
+      // 高度差补偿一次会变成双重调整，反而把视口推走 1200 多像素。
+    } catch (error) {
+      if (isTransientError(error)) {
+        notifyTransient('账号正在重连，历史消息稍后加载');
+      } else {
+        notify(`加载历史消息失败：${(error as Error).message}`, 'error');
+      }
+    } finally {
+      loadingOlderRef.current = false;
+      setLoadingOlder(false);
+    }
+  };
+
   const handleMessagesScroll = () => {
     const container = messagesScrollRef.current;
     if (!container) return;
     // column-reverse 下 scrollTop 0 是底部，向上翻会变成负值（部分浏览器用正值），
     // 所以取绝对值判断「距底部多远」，80px 内视为贴底
     pinnedToBottomRef.current = Math.abs(container.scrollTop) < 80;
+
+    // 滚到顶部附近时继续加载历史；column-reverse 的「顶部」是 scrollTop 绝对值最大处
+    const distanceFromTop =
+      container.scrollHeight - container.clientHeight - Math.abs(container.scrollTop);
+    if (distanceFromTop < 120) void loadOlderMessages();
   };
 
   useEffect(() => {
     if (pinnedToBottomRef.current) scrollMessagesToBottom();
   }, [messages]);
 
-  // 切会话重新贴底
+  // 切会话重新贴底，并重置历史分页
   useEffect(() => {
     pinnedToBottomRef.current = true;
+    paginationReadyRef.current = false;
+    loadingOlderRef.current = false;
+    setOlderCursor(null);
+    setHasMoreOlder(false);
+    setLoadingOlder(false);
     scrollMessagesToBottom();
   }, [activeCid]);
 
@@ -901,6 +969,16 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
                   data-testid="message-content"
                   className="mx-auto mb-auto w-full max-w-4xl space-y-4"
                 >
+                  {/* column-reverse 下 DOM 最前面就是视觉最上方，历史加载提示放这里 */}
+                  {loadingOlder && (
+                    <div className="flex items-center justify-center gap-2 py-2 text-xs text-[var(--text-soft)]">
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      正在加载更早的消息…
+                    </div>
+                  )}
+                  {!loadingOlder && !hasMoreOlder && messages.length >= 50 && (
+                    <p className="py-2 text-center text-[11px] text-[var(--text-soft)]">没有更早的消息了</p>
+                  )}
                   {messages.map((message, index) => {
                     const previous = messages[index - 1];
                     const showTime = !previous || Math.abs(message.time - previous.time) > 300_000;

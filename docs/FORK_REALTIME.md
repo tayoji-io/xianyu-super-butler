@@ -105,6 +105,22 @@ curl -N -H "Authorization: Bearer <token>" http://127.0.0.1:8080/chat/events
 为什么不用 `scrollIntoView`：它会留下非 0 的 `scrollTop`，破坏 column-reverse
 容器的天然贴底锚点，内容一变高就差一点点。
 
+### 历史消息分页
+
+后端接口一直支持游标分页（`get_im_messages(cid, start_timestamp, limit)`，返回
+`hasMore` / `nextCursor`），但前端此前只拉最新 50 条、没有上滑加载 —— 这是原有
+行为，不是本次改动引入的。
+
+现在补上：
+
+- 进入会话首次加载时记录 `nextCursor`，之后轮询/SSE 刷新不会重置它；
+- 滚动到顶部 120px 内触发加载，用 `cursor` 取更早的一页；
+- 新旧两页按 `messageId` 去重合并、按时间排序，上限 2000 条；
+- 顶部显示「正在加载更早的消息…」，没有更多时提示「没有更早的消息了」；
+- **不手动补偿 scrollTop**：column-reverse 容器里 Chrome 的滚动锚定会自动把
+  视口固定在原消息上（实测加载 20 条后位移 0px），再按高度差补偿一次会双重
+  调整、反而跳 1200 多像素。
+
 ## 7. 后续可做
 
 暂无。
