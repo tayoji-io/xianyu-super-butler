@@ -1509,6 +1509,17 @@ async def get_chat_user_profile(cookie_id: str, user_id: str, current_user: Dict
     if cached and cached[0] > now:
         return {"success": True, "data": cached[1]}
 
+    # 进程内缓存重启即失效，先查库：避免每次重启后又批量打一遍接口
+    stored = db_manager.get_chat_user_profile(cookie_id, user_id)
+    if stored and stored.get("age_days", 999) < 7:
+        data = {
+            "userId": user_id,
+            "nickname": stored.get("nickname", ""),
+            "avatarUrl": stored.get("avatar_url", ""),
+        }
+        _chat_user_profile_cache[key] = (now + _CHAT_PROFILE_TTL, data)
+        return {"success": True, "data": data}
+
     details = db_manager.get_cookie_details(cookie_id) or {}
     cookies_str = details.get("value") or ""
     if not cookies_str:
@@ -1521,6 +1532,14 @@ async def get_chat_user_profile(cookie_id: str, user_id: str, current_user: Dict
             raw = await api.get_user_profile(user_id)
         profile = parse_user_profile(raw)
     except Exception as exc:
+        # 账号正在风控冷却：头像只是装饰，不能因此让界面报错，也不要重试
+        from utils import risk_control
+
+        if isinstance(exc, risk_control.RiskControlBlocked):
+            data = {"userId": user_id, "nickname": "", "avatarUrl": ""}
+            _chat_user_profile_cache[key] = (now + 300, data)
+            return {"success": True, "data": data}
+
         text = str(exc)
         # 账号被处置/注销是正常业务结果，不是服务故障：返回空资料并做负缓存，
         # 避免每次打开消息中心都去撞同一个错误。
@@ -1532,6 +1551,7 @@ async def get_chat_user_profile(cookie_id: str, user_id: str, current_user: Dict
         ):
             data = {"userId": user_id, "nickname": "", "avatarUrl": ""}
             _chat_user_profile_cache[key] = (now + 24 * 3600, data)
+            db_manager.upsert_chat_user_profile(cookie_id, user_id, "", "")
             return {"success": True, "data": data}
         logger.warning(f"【{cookie_id}】获取用户 {user_id} 资料失败: {exc}")
         raise HTTPException(status_code=502, detail="获取用户资料失败，请稍后重试")
@@ -1551,6 +1571,7 @@ async def get_chat_user_profile(cookie_id: str, user_id: str, current_user: Dict
     if len(_chat_user_profile_cache) > _CHAT_PROFILE_CACHE_MAX:
         _chat_user_profile_cache.clear()
     _chat_user_profile_cache[key] = (now + _CHAT_PROFILE_TTL, data)
+    db_manager.upsert_chat_user_profile(cookie_id, user_id, data["nickname"], data["avatarUrl"])
     return {"success": True, "data": data}
 
 

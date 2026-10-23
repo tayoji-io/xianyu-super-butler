@@ -157,6 +157,19 @@ class DBManager:
             ''')
             # <<< fork:proxy
 
+            # fork:avatar 买家头像缓存：IM 接口不返回头像，user.page.head 有，
+            # 但每次打开消息中心都去请求会占用账号的限流配额，落库持久化。
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS chat_user_profiles (
+                cookie_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                nickname TEXT DEFAULT '',
+                avatar_url TEXT DEFAULT '',
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (cookie_id, user_id)
+            )
+            ''')
+
             
             # 创建keywords表
             cursor.execute('''
@@ -2604,6 +2617,58 @@ class DBManager:
                 logger.error(f"获取账号代理设置失败: {e}")
                 return ""
     # <<< fork:proxy
+
+    # >>> fork:avatar 买家资料缓存
+    def get_chat_user_profile(self, cookie_id: str, user_id: str) -> Optional[Dict[str, Any]]:
+        """读取缓存的买家资料，附带缓存年龄（天）。"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                self._execute_sql(
+                    cursor,
+                    """
+                    SELECT nickname, avatar_url,
+                           (julianday('now') - julianday(updated_at)) AS age_days
+                    FROM chat_user_profiles
+                    WHERE cookie_id = ? AND user_id = ?
+                    """,
+                    (cookie_id, user_id),
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return None
+                return {
+                    'nickname': row[0] or '',
+                    'avatar_url': row[1] or '',
+                    'age_days': float(row[2] or 0),
+                }
+            except Exception as e:
+                logger.error(f"读取买家资料缓存失败: {e}")
+                return None
+
+    def upsert_chat_user_profile(self, cookie_id: str, user_id: str, nickname: str, avatar_url: str) -> bool:
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                self._execute_sql(
+                    cursor,
+                    """
+                    INSERT INTO chat_user_profiles (cookie_id, user_id, nickname, avatar_url)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(cookie_id, user_id) DO UPDATE SET
+                        nickname = excluded.nickname,
+                        avatar_url = excluded.avatar_url,
+                        updated_at = CURRENT_TIMESTAMP
+                    """,
+                    (cookie_id, user_id, nickname or '', avatar_url or ''),
+                )
+                self.conn.commit()
+                return True
+            except Exception as e:
+                logger.error(f"写入买家资料缓存失败: {e}")
+                self.conn.rollback()
+                return False
+    # <<< fork:avatar
 
     def update_cookie_pause_duration(self, cookie_id: str, pause_duration: int) -> bool:
         """更新Cookie的自动回复暂停时间"""

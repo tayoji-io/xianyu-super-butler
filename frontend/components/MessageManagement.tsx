@@ -215,7 +215,10 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
   const [preview, setPreview] = useState<{ images: string[]; index: number } | null>(null);
   // 买家头像：IM 接口不返回，按 userId 懒加载后缓存在这里
   const [userAvatars, setUserAvatars] = useState<Record<string, string>>({});
+  const userAvatarsRef = useRef<Record<string, string>>({});
   const avatarRequestsRef = useRef<Set<string>>(new Set());
+  const avatarLoopRef = useRef(false);
+  const activeAccountIdRef = useRef('');
   // 历史消息分页：后端支持 cursor，之前前端只拉最新 50 条
   const [olderCursor, setOlderCursor] = useState<number | null>(null);
   const [hasMoreOlder, setHasMoreOlder] = useState(false);
@@ -582,42 +585,55 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
     return () => window.clearInterval(timer);
   }, [isActive, view, activeAccountId, mobilePane]);
 
-  // 会话列表里的买家头像：IM 接口返回空，按 userId 逐个补（顺序请求，避免
-  // 打开消息中心就并发打一批 mtop 触发风控）
+  // 会话列表里的买家头像：IM 接口返回空，按 userId 补。
+  // 头像只是装饰，必须让路给消息/订单请求：每批最多 8 个、间隔 500~800ms，
+  // 且同一时间只跑一个队列（后端还有 30 次/分钟的账号级令牌桶）。
   useEffect(() => {
-    if (!isActive || !activeAccountId) return undefined;
+    userAvatarsRef.current = userAvatars;
+  }, [userAvatars]);
+
+  useEffect(() => {
+    activeAccountIdRef.current = activeAccountId;
+  }, [activeAccountId]);
+
+  useEffect(() => {
+    if (!isActive || view !== 'messages' || !activeAccountId) return;
+    if (avatarLoopRef.current) return;
+
     const missing = conversations
       .filter((conversation) => (
         conversation.otherUserId
         && !conversation.otherUserAvatar
-        && !userAvatars[conversation.otherUserId]
+        && !userAvatarsRef.current[conversation.otherUserId]
         && !avatarRequestsRef.current.has(conversation.otherUserId)
       ))
-      .slice(0, 20);
-    if (!missing.length) return undefined;
+      .slice(0, 8);
+    if (!missing.length) return;
 
-    let cancelled = false;
+    const accountId = activeAccountId;
+    avatarLoopRef.current = true;
     const run = async () => {
-      for (const conversation of missing) {
-        if (cancelled) return;
-        const userId = conversation.otherUserId;
-        avatarRequestsRef.current.add(userId);
-        try {
-          const profile = await getChatUserProfile(activeAccountId, userId);
-          if (!cancelled && profile?.avatarUrl) {
-            setUserAvatars((previous) => ({ ...previous, [userId]: profile.avatarUrl }));
+      try {
+        for (const conversation of missing) {
+          if (activeAccountIdRef.current !== accountId) return;
+          const userId = conversation.otherUserId;
+          avatarRequestsRef.current.add(userId);
+          try {
+            const profile = await getChatUserProfile(accountId, userId);
+            if (profile?.avatarUrl) {
+              setUserAvatars((previous) => ({ ...previous, [userId]: profile.avatarUrl }));
+            }
+          } catch {
+            // 头像失败不影响列表，保持首字母占位
           }
-        } catch {
-          // 头像失败不影响列表，保持首字母占位
+          await new Promise((resolve) => window.setTimeout(resolve, 500 + Math.random() * 300));
         }
-        await new Promise((resolve) => window.setTimeout(resolve, 200));
+      } finally {
+        avatarLoopRef.current = false;
       }
     };
     void run();
-    return () => {
-      cancelled = true;
-    };
-  }, [isActive, activeAccountId, conversations, userAvatars]);
+  }, [isActive, view, activeAccountId, conversations]);
 
   useEffect(() => {
     if (!isActive || view !== 'messages' || !activeAccountId || !activeCid) return undefined;
