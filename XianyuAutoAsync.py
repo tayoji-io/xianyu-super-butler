@@ -687,9 +687,17 @@ class XianyuLive:
             )
             return delay
 
-        # WebSocket意外断开 - 短延迟
+        # WebSocket意外断开 - 短延迟；但连续快速断开要指数退避
         if "no close frame received or sent" in error_msg:
-            return min(3 * self.connection_failures, 15)
+            rapid = getattr(self, "_rapid_close_count", 0)
+            if rapid >= 2:
+                delay = min(3 * (2 ** (rapid - 1)), 120)
+                logger.warning(
+                    f"【{self.cookie_id}】连续 {rapid} 次快速断开，退避 {delay} 秒再重连"
+                    f"（避免把 token 接口打成限流）"
+                )
+                return delay
+            return min(3 * max(1, self.connection_failures), 15)
 
         # 网络连接问题 - 长延迟
         elif "Connection refused" in error_msg or "timeout" in error_msg.lower():
@@ -999,6 +1007,11 @@ class XianyuLive:
         self.connection_state = ConnectionState.DISCONNECTED  # 连接状态
         self.connection_failures = 0  # 连续连接失败次数
         self.max_connection_failures = 5  # 最大连续失败次数
+        # fork:ratelimit 连接抖动检测：连接后很快又被断开，通常是同账号在
+        # 其他客户端（网页版/手机 App）登录互相踢下线。连续快速断开时指数退避，
+        # 避免每 3 秒重连一次、每次都刷 token 把 mtop 打成限流。
+        self._ws_connected_at = 0.0
+        self._rapid_close_count = 0
         self.last_successful_connection = 0  # 上次成功连接时间
         self.last_state_change_time = time.time()  # 上次状态变化时间
         # 登录态已过期且无法自动续期时置位。与"风控中"要分开：风控能等能过验证，
@@ -2246,6 +2259,20 @@ class XianyuLive:
                 logger.info(f"【{self.cookie_id}】人工滑块验证进行中，跳过本次自动 Token 刷新")
                 self.last_token_refresh_status = "skipped_manual_captcha"
                 return None
+
+            # 刚成功刷新过就直接复用：连接抖动时 init() 会反复进来，
+            # 每次都打 token 接口会瞬间触发 mtop 限流（实测 9 次/分钟）。
+            if (
+                self.current_token
+                and self.last_token_refresh_time
+                and time.time() - self.last_token_refresh_time < 60
+            ):
+                logger.info(
+                    f"【{self.cookie_id}】Token 刚刷新过"
+                    f"（{int(time.time() - self.last_token_refresh_time)} 秒前），直接复用"
+                )
+                self.last_token_refresh_status = "success"
+                return self.current_token
 
             # 检查滑块验证重试次数，防止无限递归
             if captcha_retry_count >= self.max_captcha_verification_count:
@@ -10627,6 +10654,7 @@ class XianyuLive:
                             # 初始化完成后才设置为已连接状态
                             self._set_connection_state(ConnectionState.CONNECTED, "初始化完成，连接就绪")
                             self.connection_failures = 0
+                            self._ws_connected_at = time.time()
                             self.last_successful_connection = time.time()
 
                             # 记录后台任务启动前的状态
@@ -10770,6 +10798,17 @@ class XianyuLive:
                     
                     # 对于连接关闭错误，使用警告级别而不是错误级别
                     if is_connection_closed:
+                        lifetime = time.time() - (self._ws_connected_at or 0)
+                        if self._ws_connected_at and lifetime < 10:
+                            self._rapid_close_count += 1
+                        else:
+                            self._rapid_close_count = 0
+                        if self._rapid_close_count == 3:
+                            logger.error(
+                                f"【{self.cookie_id}】连接连续 {self._rapid_close_count} 次在 10 秒内被断开，"
+                                f"账号可能同时登录了网页版/手机 App（会互相踢下线），"
+                                f"请关闭其他客户端；否则会反复重连并触发平台限流"
+                            )
                         logger.warning(f"【{self.cookie_id}】WebSocket连接已关闭 ({self.connection_failures + 1}/{self.max_connection_failures})")
                         logger.warning(f"【{self.cookie_id}】关闭原因: {error_msg}")
                     else:
@@ -10869,10 +10908,10 @@ class XianyuLive:
                     logger.warning(f"【{self.cookie_id}】将在 {retry_delay} 秒后重试连接...")
 
                     try:
-                        # 清空当前token，确保重新连接时会重新获取
-                        if self.current_token:
-                            logger.warning(f"【{self.cookie_id}】清空当前token，重新连接时将重新获取")
-                            self.current_token = None
+                        # 不要在这里清空 token：WS 断开大多是网络抖动或被其他客户端
+                        # 踢下线，token 本身仍然有效。清空会导致每次重连都打一次
+                        # token 接口 —— 连接抖动时会瞬间打满 mtop 限流（实测 9 次/分钟）。
+                        # init() 会按 token_refresh_interval 判断是否需要刷新。
 
                         # 直接重置任务引用，不等待取消（快速重连方案）
                         # 这样可以避免等待任务取消导致的阻塞问题
