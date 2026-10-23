@@ -14,7 +14,6 @@ import {
   Smile,
   Zap,
   Trash2,
-  UserRound,
 } from 'lucide-react';
 
 import {
@@ -173,18 +172,8 @@ const accountName = (account?: ChatAccount) =>
 
 // 买家占位头像的色板：与站点主题协调。按用户 ID 哈希取色，
 // 同一买家在会话列表和聊天气泡里、每次刷新都是同一颜色。
-const AVATAR_PALETTE = [
-  '#8c7900', '#0f704b', '#2a5f92', '#945800',
-  '#6b5a8a', '#b45309', '#3f7a5c', '#7c4d5e',
-];
-
-const avatarColorFor = (seed: string) => {
-  let hash = 0;
-  for (let i = 0; i < seed.length; i += 1) {
-    hash = (hash * 31 + seed.charCodeAt(i)) | 0;
-  }
-  return AVATAR_PALETTE[Math.abs(hash) % AVATAR_PALETTE.length];
-};
+// 没有头像时的默认图（frontend/public/default-avatar.webp → /static/default-avatar.webp）
+const DEFAULT_AVATAR = '/static/default-avatar.webp';
 
 const filterTypeLabel: Record<MessageFilterType, string> = {
   skip_reply: '跳过自动回复',
@@ -811,29 +800,24 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
     }
   };
 
-  const renderAvatar = (url: string | undefined, label: string, className: string, seed?: string) => {
+  const renderAvatar = (url: string | undefined, _label: string, className: string, _seed?: string) => {
     const normalized = normalizeImageUrl(url);
-    const placeholder = (
-      <div
-        className={`${className} flex items-center justify-center text-sm font-bold text-white`}
-        style={{ backgroundColor: avatarColorFor(String(seed || label || '').trim()) }}
-      >
-        {label.trim().slice(0, 1) || <UserRound className="h-4 w-4" />}
-      </div>
-    );
-    // 平台真给了头像（alicdn）就直连；加载失败时回落到本地彩色首字母，
-    // 不再依赖 DiceBear 之类的外部生成服务——国内连不通只会得到一片灰块。
-    return normalized && !failedAvatars.has(normalized) ? (
+    const usable = Boolean(normalized) && !failedAvatars.has(normalized as string);
+    // 有真实头像就直连；没有、或平台给的图挂了（旧 CDN 的默认占位图经常这样），
+    // 统一回落到本地默认头像，不再用首字母色块。
+    return (
       <img
-        src={normalized}
+        src={usable ? (normalized as string) : DEFAULT_AVATAR}
         alt=""
         className={`${className} object-cover`}
         loading="lazy"
         referrerPolicy="no-referrer"
-        onError={() => setFailedAvatars((previous) => new Set(previous).add(normalized))}
+        onError={() => {
+          if (usable && normalized) {
+            setFailedAvatars((previous) => new Set(previous).add(normalized));
+          }
+        }}
       />
-    ) : (
-      placeholder
     );
   };
 

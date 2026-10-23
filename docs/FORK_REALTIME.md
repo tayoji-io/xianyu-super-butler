@@ -132,8 +132,9 @@ IM 的会话/消息接口不返回头像（`avatar` / `avatarUrl` / `senderAvata
   批量请求；被平台处置的用户空资料负缓存 1 天；
 - 前端按 `userId` 懒加载：单队列、每批最多 8 个、间隔 500~800ms，结果存内存；
 - 账号处于风控冷却期时直接返回空头像（缓存 5 分钟），不重试、不报错；
-- 平台默认占位头像（`gtms03.alicdn.com` 旧 CDN，HTTPS 已不可用）视为无头像，
-  回落到首字母，避免裂图。
+- 平台默认占位头像（`gtms03.alicdn.com` 旧 CDN，HTTPS 已不可用）视为无头像；
+- 没有头像时统一显示本地默认头像 `frontend/public/default-avatar.webp`
+  （构建后为 `/static/default-avatar.webp`），不再用首字母色块。
 
 关于风控：`mtop.idle.web.user.page.head` 是普通只读接口，单次调用风险很低，
 但所有 `XianyuSellerAPI` 调用共用账号级令牌桶（默认 30 次/分钟）和熔断。
