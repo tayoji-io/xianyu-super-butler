@@ -45,6 +45,7 @@ import {
 } from '../services/api';
 import { confirmAction, notify } from '../services/feedback';
 import { EmptyState, SectionHeader } from './ui';
+import ImageLightbox from './ImageLightbox';
 
 // 同一会话的消息会从「最新一页」和「历史分页」两个方向合入，按 messageId 去重
 // 再按时间排序；没有 messageId 时用时间+方向+内容兜底。
@@ -209,6 +210,8 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
   const [accountsLoading, setAccountsLoading] = useState(true);
   const [conversationsLoading, setConversationsLoading] = useState(false);
   const [messagesLoading, setMessagesLoading] = useState(false);
+  // 图片预览：同一消息里的多张图可以左右切换
+  const [preview, setPreview] = useState<{ images: string[]; index: number } | null>(null);
   // 历史消息分页：后端支持 cursor，之前前端只拉最新 50 条
   const [olderCursor, setOlderCursor] = useState<number | null>(null);
   const [hasMoreOlder, setHasMoreOlder] = useState(false);
@@ -1013,12 +1016,17 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
                             <div className={`max-w-[76%] rounded-md px-3.5 py-2.5 text-sm leading-6 ${
                               message.isSelf ? 'bg-[var(--brand)] text-[var(--brand-ink)]' : 'bg-[var(--surface-strong)] text-[var(--text)]'
                             }`}>
-                              {message.images.map((url) => (
+                              {message.images.map((url, imageIndex) => (
                                 <img
                                   key={url}
                                   src={normalizeImageUrl(url)}
                                   alt="聊天图片"
-                                  className="mb-2 max-h-80 max-w-full rounded object-contain last:mb-0"
+                                  title="点击预览"
+                                  onClick={() => setPreview({
+                                    images: message.images.map(normalizeImageUrl),
+                                    index: imageIndex,
+                                  })}
+                                  className="mb-2 max-h-80 max-w-full cursor-zoom-in rounded object-contain last:mb-0"
                                 />
                               ))}
                               {message.text && (
@@ -1313,7 +1321,18 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
     </div>
   );
 
-  return view === 'messages' ? renderMessages() : renderFilters();
+  return (
+    <>
+      {view === 'messages' ? renderMessages() : renderFilters()}
+      {preview && (
+        <ImageLightbox
+          images={preview.images}
+          startIndex={preview.index}
+          onClose={() => setPreview(null)}
+        />
+      )}
+    </>
+  );
 };
 
 export default MessageManagement;
