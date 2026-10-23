@@ -1302,7 +1302,7 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
                   rows={2}
                   placeholder={activeAccount?.connected ? '输入消息' : '账号离线，暂时无法发送'}
                   disabled={!activeAccount?.connected}
-                  className="min-h-[56px] min-w-0 flex-1 resize-none border-0 bg-[var(--surface)] px-0 py-1 text-sm leading-6 text-[var(--text)] outline-none placeholder:text-[var(--text-soft)] disabled:bg-[var(--surface)] sm:min-h-[72px]"
+                  className="min-h-[56px] min-w-0 flex-1 resize-none border-0 bg-[var(--surface)] px-0 py-1 text-sm leading-6 text-[var(--text)] outline-none focus:outline-none focus-visible:outline-none placeholder:text-[var(--text-soft)] disabled:bg-[var(--surface)] sm:min-h-[72px]"
                 />
                 <button
                   type="button"
