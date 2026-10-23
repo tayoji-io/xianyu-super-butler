@@ -7,7 +7,7 @@
 **本项目征集PR、功能更新，任何一个提交PR的作者会在未来获得顶配模型token奖励**
 
 [![GitHub Stars](https://img.shields.io/github/stars/23Star/xianyu-super-butler?style=flat&logo=github&color=f5b301)](https://github.com/23Star/xianyu-super-butler/stargazers)
-[![Version](https://img.shields.io/badge/Version-3.4.0-52c41a)](https://github.com/23Star/xianyu-super-butler/releases)
+[![Version](https://img.shields.io/badge/Version-3.3.0%2B1-52c41a)](https://github.com/23Star/xianyu-super-butler/releases)
 [![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![React](https://img.shields.io/badge/React-19-149ECA?logo=react&logoColor=white)](https://react.dev/)
 [![License](https://img.shields.io/badge/License-AGPL--3.0-222222)](LICENSE)
@@ -172,11 +172,17 @@ Compose 的好处是配置写在文件里、改起来清楚，升级也只有一
 
 ### 打 tag 自动发版
 
-只有打 tag 或手动触发才会构建，产出的标签不同：
+只有打 tag 或手动触发才会构建。
+
+**fork 版本号规则**：`上游版本 + 内部号`，例如上游是 `3.3.0`，本仓库第一个版本是
+`3.3.0+1`，之后内部号自增：`3.3.0+2`、`3.3.0+3`……上游升到 `3.4.0` 后重新从
+`3.4.0+1` 开始。这样一眼能看出基于哪个上游版本，也方便和原项目对比。
+
+Git tag 可以直接用 `v3.3.0+1`；Docker tag 不允许 `+`，构建时会自动换成 `-`：
 
 | 触发 | 产出的镜像标签 |
 | --- | --- |
-| 推 `v3.3.1` | `latest`、`v3.3.1`、`3.3.1` |
+| 推 `v3.3.0+1` | `latest`、`v3.3.0-1`、`3.3.0-1` |
 | Actions 手动 Run workflow | `sha-<提交短哈希>` |
 
 推 `main` 不会构建。线上固定版本请显式拉版本号，不要依赖 `latest`。
@@ -184,34 +190,37 @@ Compose 的好处是配置写在文件里、改起来清楚，升级也只有一
 发版步骤：
 
 ```bash
-# 1. 先把版本号改成一致（镜像版本、关于页、README 徽章）
-#    app/announcement.py 里的 APP_VERSION，以及 README 顶部的 Version 徽章
+# 1. 版本号改成 上游版本+内部号（内部号在上一版基础上 +1）
+#    app/announcement.py 的 APP_VERSION，以及 README 顶部的 Version 徽章
+#    例：上游 3.3.0 → 本仓库 3.3.0+1、3.3.0+2 …
 # 2. 提交并推送代码（这一步不会触发构建）
-git add -A && git commit -m "release: 3.3.1"
+git add -A && git commit -m "release: 3.3.0+1"
 git push origin main
 
 # 3. 打 tag 并推送（tag 名必须以 v 开头，workflow 只监听 v*，这一步才会构建）
-git tag v3.3.1
-git push origin v3.3.1
+git tag "v3.3.0+1"
+git push origin "v3.3.0+1"
 ```
 
-推送后到 Actions → Publish Docker image 看构建结果。成功后可以：
+镜像标签会自动把 `+` 换成 `-`，所以拉取时用：
 
 ```bash
-docker pull ghcr.io/tayoji-io/xianyu-super-butler:3.3.1
+docker pull ghcr.io/tayoji-io/xianyu-super-butler:3.3.0-1
 ```
 
-在 `docker-compose.nas.yml` 里把 `:latest` 换成 `:3.3.1`，升级就不会被 `latest` 意外带跑。
+推送后到 Actions → Publish Docker image 看构建结果。在 `docker-compose.nas.yml` 里把
+`:latest` 换成 `:3.3.0-1`，升级就不会被 `latest` 意外带跑。
 
 几个坑：
 
 - **tag 已存在**：先删再推
   ```bash
-  git tag -d v3.3.1
-  git push origin :refs/tags/v3.3.1
+  git tag -d "v3.3.0+1"
+  git push origin ":refs/tags/v3.3.0+1"
   ```
 - **版本号对不上**：`APP_VERSION` 还是旧值的话，「关于」页会显示旧版本，和镜像标签不一致。
-- **tag 不触发构建**：确认 tag 以 `v` 开头（`v3.3.1` 可以，`3.3.1` 不行），且 Actions 已启用。
+- **tag 不触发构建**：确认 tag 以 `v` 开头（`v3.3.0+1` 可以，`3.3.0+1` 不行），且 Actions 已启用。
+- **镜像标签里的 `+`**：Docker 不允许 `+`，构建时会自动换成 `-`，即 `v3.3.0+1` → `3.3.0-1`。
 
 ### NAS 与低配设备（飞牛 fnOS、群晖、威联通、软路由、低配 VPS）
 

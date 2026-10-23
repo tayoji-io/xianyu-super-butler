@@ -55,7 +55,7 @@ FETCH_TIMEOUT = 8
 # 本软件版本号。发布新版时改这里，并同步更新公网服务器上 JSON 的 latest_version。
 # 注意不要复用 global_config.yml 里的 APP_CONFIG.app_version —— 那是伪装成闲鱼
 # 客户端时上报给平台的协议版本，与本软件版本无关。
-APP_VERSION = '3.4.0'
+APP_VERSION = '3.3.0+1'
 
 
 def get_local_version() -> str:
@@ -100,9 +100,16 @@ def _version_tuple(value: str):
 
     字符串比较会把 '1.10' 判成小于 '1.2'，这里按数字段逐位比。
     """
+    raw = str(value or '').strip().lstrip('vV')
+    # fork 版本号形如 3.3.0+1：+ 后面是内部构建号，单独占一位，
+    # 这样 3.3.0+1 < 上游 3.3.1，不会被误判成"已是最新"。
+    main, _, build = raw.partition('+')
     parts = []
-    for chunk in str(value or '').strip().lstrip('vV').split('.'):
+    for chunk in main.split('.'):
         digits = ''.join(ch for ch in chunk if ch.isdigit())
+        parts.append(int(digits) if digits else 0)
+    if build:
+        digits = ''.join(ch for ch in build if ch.isdigit())
         parts.append(int(digits) if digits else 0)
     return tuple(parts) if parts else (0,)
 
