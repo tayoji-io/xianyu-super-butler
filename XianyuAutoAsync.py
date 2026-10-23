@@ -2845,7 +2845,14 @@ class XianyuLive:
                     # 筛选出x5相关的cookies（包括x5sec, x5step等）
                     for cookie_name, cookie_value in cookies.items():
                         cookie_name_lower = cookie_name.lower()
-                        if cookie_name_lower.startswith('x5') or 'x5sec' in cookie_name_lower:
+                        # x5* 是通行凭证；_m_h5_tk 是 mtop 签名令牌 —— 刚扫码的
+                        # 账号可能一直没有它，滑块页里的 mtop 请求会补上，必须一起
+                        # 回收，否则验证通过后仍然无法签名、拿不到新 token。
+                        if (
+                            cookie_name_lower.startswith('x5')
+                            or 'x5sec' in cookie_name_lower
+                            or cookie_name_lower in ('_m_h5_tk', '_m_h5_tk_enc')
+                        ):
                             x5sec_cookies[cookie_name] = cookie_value
 
                     logger.info(f"【{self.cookie_id}】找到{len(x5sec_cookies)}个x5相关cookies: {list(x5sec_cookies.keys())}")

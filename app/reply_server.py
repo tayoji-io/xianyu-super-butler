@@ -10000,56 +10000,121 @@ async def get_fresh_captcha_url(
     from utils.xianyu_utils import trans_cookies, generate_sign, generate_device_id
 
     cookies_str = user_cookies[cookie_id]
+
+    # 运行中的实例可能已经从 mtop 响应里拿到了新的 _m_h5_tk，而数据库里
+    # 还是扫码时的旧 Cookie。优先用实例内存里的值。
+    manager = cookie_manager.manager
+    instance = manager.instances.get(cookie_id) if manager else None
+    if instance is not None:
+        live_cookies = getattr(instance, 'cookies_str', '') or ''
+        if live_cookies and '_m_h5_tk' in live_cookies:
+            cookies_str = live_cookies
+
     try:
         cookie_dict = trans_cookies(cookies_str)
     except ValueError:
         raise HTTPException(status_code=400, detail='账号 Cookie 为空，请重新扫码登录')
 
-    token = (cookie_dict.get('_m_h5_tk') or '').split('_')[0]
-    if not token:
-        raise HTTPException(
-            status_code=409,
-            detail='账号 Cookie 缺少 _m_h5_tk 字段，请重新扫码登录',
+    def _build_token_request(cookies_value: str, token_value: str):
+        timestamp = str(int(time.time() * 1000))
+        device_id = generate_device_id(cookie_dict.get('unb', ''))
+        data_value = (
+            '{"appKey":"444e9908a51d1cb236a27862abc769c9","deviceId":"' + device_id + '"}'
         )
+        params = {
+            'jsv': '2.7.2', 'appKey': '34839810', 't': timestamp,
+            'sign': generate_sign(timestamp, token_value, data_value),
+            'v': '1.0', 'type': 'originaljson', 'accountSite': 'xianyu',
+            'dataType': 'json', 'timeout': '20000',
+            'api': 'mtop.taobao.idlemessage.pc.login.token',
+            'sessionOption': 'AutoLoginOnly',
+            'dangerouslySetWindvaneParams': '%5Bobject%20Object%5D',
+            'smToken': 'token', 'queryToken': 'sm', 'sm': 'sm',
+            'spm_cnt': 'a21ybx.im.0.0',
+            'spm_pre': 'a21ybx.home.sidebar.1.4c053da6vYwnmf',
+            'log_id': '4c053da6vYwnmf',
+        }
+        headers = {
+            'accept': 'application/json',
+            'content-type': 'application/x-www-form-urlencoded',
+            'user-agent': CHROME_UA,
+            'referer': 'https://www.goofish.com/',
+            'origin': 'https://www.goofish.com',
+            'cookie': cookies_value,
+        }
+        return params, headers, data_value
 
-    timestamp = str(int(time.time() * 1000))
-    device_id = generate_device_id(cookie_dict.get('unb', ''))
-    data_value = (
-        '{"appKey":"444e9908a51d1cb236a27862abc769c9","deviceId":"' + device_id + '"}'
-    )
-    params = {
-        'jsv': '2.7.2', 'appKey': '34839810', 't': timestamp,
-        'sign': generate_sign(timestamp, token, data_value),
-        'v': '1.0', 'type': 'originaljson', 'accountSite': 'xianyu',
-        'dataType': 'json', 'timeout': '20000',
-        'api': 'mtop.taobao.idlemessage.pc.login.token',
-        'sessionOption': 'AutoLoginOnly',
-        'dangerouslySetWindvaneParams': '%5Bobject%20Object%5D',
-        'smToken': 'token', 'queryToken': 'sm', 'sm': 'sm',
-        'spm_cnt': 'a21ybx.im.0.0',
-        'spm_pre': 'a21ybx.home.sidebar.1.4c053da6vYwnmf',
-        'log_id': '4c053da6vYwnmf',
-    }
-    headers = {
-        'accept': 'application/json',
-        'content-type': 'application/x-www-form-urlencoded',
-        'user-agent': CHROME_UA,
-        'referer': 'https://www.goofish.com/',
-        'origin': 'https://www.goofish.com',
-        'cookie': cookies_str,
-    }
+    def _merge_set_cookies(cookies_value: str, received) -> str:
+        merged = trans_cookies(cookies_value)
+        changed = False
+        for name, value in received.items():
+            if value and merged.get(name) != value:
+                merged[name] = value
+                changed = True
+        if not changed:
+            return cookies_value
+        return '; '.join(f'{name}={value}' for name, value in merged.items())
+
+    async def _post_token(session, cookies_value: str, token_value: str):
+        params, headers, data_value = _build_token_request(cookies_value, token_value)
+        async with session.post(
+            API_ENDPOINTS.get('token'),
+            params=params, data={'data': data_value}, headers=headers,
+            timeout=aiohttp.ClientTimeout(total=25),
+        ) as response:
+            body = await response.json(content_type=None)
+            received = {name: morsel.value for name, morsel in response.cookies.items()}
+        return body, received
+
+    token = (cookie_dict.get('_m_h5_tk') or '').split('_')[0]
 
     try:
         # fork:proxy 账号级请求走代理
         from utils.proxy_utils import create_aiohttp_session, get_cookie_proxy
 
         async with create_aiohttp_session(get_cookie_proxy(cookie_id)) as session:
-            async with session.post(
-                API_ENDPOINTS.get('token'),
-                params=params, data={'data': data_value}, headers=headers,
-                timeout=aiohttp.ClientTimeout(total=25),
-            ) as response:
-                payload = await response.json(content_type=None)
+            payload = None
+            if not token:
+                # 扫码刚进来的账号，Cookie 里还没有 _m_h5_tk。mtop 的规矩是
+                # 用空 token 打一次：正常情况会下发 _m_h5_tk；如果账号正处于
+                # 风控中，这次响应会直接带回一个新的 punish 链接 —— 两者都能用。
+                logger.info(f'【{cookie_id}】Cookie 缺少 _m_h5_tk，尝试自动补全')
+                body, received = await _post_token(session, cookies_str, '')
+                merged = _merge_set_cookies(cookies_str, received)
+                new_token = (trans_cookies(merged).get('_m_h5_tk') or '').split('_')[0]
+                if new_token:
+                    cookies_str = merged
+                    token = new_token
+                    db_manager.save_cookie(cookie_id, merged)
+                    logger.info(f'【{cookie_id}】已自动补全 _m_h5_tk')
+                else:
+                    bootstrap_url = ''
+                    if isinstance(body, dict):
+                        bootstrap_url = ((body.get('data') or {}).get('url') or '')
+                    if bootstrap_url and (
+                        'punish' in bootstrap_url or 'action=captcha' in bootstrap_url
+                    ):
+                        payload = body
+                        logger.info(
+                            f'【{cookie_id}】没有 _m_h5_tk，但空 token 响应已给出验证链接'
+                        )
+                    else:
+                        raise HTTPException(
+                            status_code=409,
+                            detail=(
+                                '账号 Cookie 缺少 _m_h5_tk，自动补全失败；'
+                                '请稍后重试或重新扫码登录'
+                            ),
+                        )
+
+            if payload is None:
+                payload, received = await _post_token(session, cookies_str, token)
+                merged = _merge_set_cookies(cookies_str, received)
+                if merged != cookies_str:
+                    # mtop 每次响应都可能续期 _m_h5_tk，落库避免下次又缺
+                    db_manager.save_cookie(cookie_id, merged)
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f'请求闲鱼接口失败: {exc}') from exc
 

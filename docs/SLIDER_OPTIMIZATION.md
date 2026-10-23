@@ -63,6 +63,22 @@
 注意：滑块的持久化 profile 是 `browser_data/slider_<账号id>`，与主浏览器池
 的 profile 分开，存储互不影响，但视口/DPR/配色等身份参数是同一套。
 
+## 人工验证链接与 `_m_h5_tk`
+
+「在我的浏览器打开验证页」按钮会调
+`POST /api/risk-control/{cookie_id}/fresh-captcha-url`，用账号 Cookie 重新请求
+一次 Token 接口拿新鲜链接。
+
+刚扫码的账号 Cookie 里可能还没有 `_m_h5_tk`（mtop 签名令牌），旧实现直接报
+「请重新扫码登录」。现在：
+
+1. 优先用运行中实例内存里的 Cookie（实例可能已经从 mtop 响应里拿到了新令牌）；
+2. 没有令牌时用**空 token** 打一次 mtop：
+   - 正常账号会通过 `Set-Cookie` 下发 `_m_h5_tk`，补全后继续请求；
+   - 正在风控中的账号，这次响应会直接带回新的 punish 链接，直接返回给用户；
+3. 滑块验证完成后，除了 `x5*`，也会把 `_m_h5_tk` / `_m_h5_tk_enc` 一起回收，
+   否则验证通过了仍然无法签名、拿不到新 token。
+
 ## 后续可做
 
 - 自动 profile 轮换：连续失败 N 次后自动换目录；
