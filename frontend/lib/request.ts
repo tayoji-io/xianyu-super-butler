@@ -36,6 +36,12 @@ request.interceptors.response.use(
         /* no-op (SSR) */
       }
     }
+    // 后端 HTTPException 的 detail 是给人看的中文说明；不透传的话界面只会显示
+    // “Request failed with status code 503”，用户完全不知道发生了什么。
+    const detail = (error.response?.data as { detail?: unknown } | undefined)?.detail;
+    if (typeof detail === 'string' && detail.trim()) {
+      error.message = detail.trim();
+    }
     return Promise.reject(error);
   },
 );

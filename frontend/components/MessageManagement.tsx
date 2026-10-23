@@ -206,6 +206,8 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
   // fork:realtime SSE 推送：消息一到就刷新，不用等下一轮轮询
   const realtimeTimerRef = useRef<number | null>(null);
   const realtimePendingRef = useRef({ chat: false });
+  const transientNoticeAtRef = useRef(0);
+  const transientRetryRef = useRef<number | null>(null);
   const loadMessagesRef = useRef<(silent?: boolean, fresh?: boolean) => Promise<void>>(async () => {});
   const loadConversationsRef = useRef<(silent?: boolean, fresh?: boolean) => Promise<void>>(async () => {});
 
@@ -300,6 +302,28 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
     }
   };
 
+  // 账号每小时刷新 Token 会主动断开 WebSocket 重连，这几秒内 /chat/* 返回 503。
+  // 属于短暂状态：给一次温和提示并自动重试，不要弹红色报错吓人。
+  const isTransientError = (error: unknown) => {
+    const status = (error as { response?: { status?: number } })?.response?.status;
+    return status === 502 || status === 503 || status === 504;
+  };
+
+  const notifyTransient = (message: string) => {
+    const now = Date.now();
+    if (now - transientNoticeAtRef.current < 30000) return;
+    transientNoticeAtRef.current = now;
+    notify(message, 'warning');
+  };
+
+  const scheduleTransientRetry = (action: () => void) => {
+    if (transientRetryRef.current) window.clearTimeout(transientRetryRef.current);
+    transientRetryRef.current = window.setTimeout(() => {
+      transientRetryRef.current = null;
+      action();
+    }, 3000);
+  };
+
   const loadConversations = async (silent = false, fresh = false) => {
     if (!activeAccountId) {
       setConversations([]);
@@ -340,7 +364,12 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
         return next;
       });
     } catch (error) {
-      if (!silent) notify(`加载会话失败：${(error as Error).message}`, 'error');
+      if (isTransientError(error)) {
+        if (!silent) notifyTransient('账号正在重连，会话列表稍后自动刷新');
+        scheduleTransientRetry(() => void loadConversationsRef.current(true, true));
+      } else if (!silent) {
+        notify(`加载会话失败：${(error as Error).message}`, 'error');
+      }
     } finally {
       if (!silent) setConversationsLoading(false);
     }
@@ -356,7 +385,12 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
       const result = await getChatMessages(activeAccountId, activeCid, undefined, 50, fresh);
       setMessages(result.messages || []);
     } catch (error) {
-      if (!silent) notify(`加载聊天记录失败：${(error as Error).message}`, 'error');
+      if (isTransientError(error)) {
+        if (!silent) notifyTransient('账号正在重连，聊天记录稍后自动刷新');
+        scheduleTransientRetry(() => void loadMessagesRef.current(true, true));
+      } else if (!silent) {
+        notify(`加载聊天记录失败：${(error as Error).message}`, 'error');
+      }
     } finally {
       if (!silent) setMessagesLoading(false);
     }
