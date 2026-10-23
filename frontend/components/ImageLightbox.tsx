@@ -121,7 +121,7 @@ const ImageLightbox: React.FC<ImageLightboxProps> = ({
 
   return createPortal(
     <div
-      className="fixed inset-0 z-[10000] flex select-none flex-col bg-black/95 backdrop-blur-md"
+      className="fixed inset-0 z-[10000] flex select-none flex-col bg-black/75 backdrop-blur-sm"
       role="dialog"
       aria-modal="true"
       aria-label={alt}
@@ -172,7 +172,7 @@ const ImageLightbox: React.FC<ImageLightboxProps> = ({
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}
           onPointerCancel={handlePointerUp}
-          className="max-h-full max-w-full object-contain transition-transform duration-75"
+          className="max-h-full max-w-full rounded-sm object-contain shadow-[0_20px_60px_rgba(0,0,0,0.55)] ring-1 ring-white/10 transition-transform duration-75"
           style={{
             transform: `translate(${offset.x}px, ${offset.y}px) scale(${scale}) rotate(${rotation}deg)`,
             cursor: scale > 1 ? (dragRef.current ? 'grabbing' : 'grab') : 'zoom-in',
