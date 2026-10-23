@@ -1202,7 +1202,7 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
                 disabled={!activeAccount?.connected}
                 className="w-full resize-none border-0 bg-[var(--surface)] px-0 py-1 text-sm leading-6 text-[var(--text)] outline-none focus:outline-none focus-visible:outline-none placeholder:text-[var(--text-soft)] disabled:bg-[var(--surface)]"
               />
-              <div className="mt-2 flex items-center justify-between gap-2">
+              <div className="flex items-center justify-between gap-2">
                 <div className="flex items-center gap-4 text-[var(--text-muted)]">
                 <div className="relative flex h-6 items-center">
                   <button
