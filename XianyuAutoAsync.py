@@ -2434,6 +2434,20 @@ class XianyuLive:
                                 risk_control.registry.get(self.cookie_id).reset()
                                 return new_token
 
+                    # 被限流（RGV587 / 被挤爆）时不要拉起滑块：这时平台是在
+                    # 限速而不是等人机验证，滑块必然判失败，只会把风险评分推得更高。
+                    ret_text = " ".join(str(item) for item in (res_json.get('ret') or []))
+                    if any(
+                        marker in ret_text
+                        for marker in ("RGV587", "被挤爆", "挤爆了", "FAIL_SYS_FLOW_LIMIT")
+                    ):
+                        guard.block_for(
+                            15 * 60,
+                            "Token 刷新被限流（被挤爆），暂停 15 分钟等待限流解除",
+                        )
+                        self.last_token_refresh_status = "rate_limited"
+                        return None
+
                     # 检查是否需要滑块验证
                     if self._need_captcha_verification(res_json):
                         logger.warning(f"【{self.cookie_id}】检测到需要滑块验证，开始处理...")
@@ -2493,8 +2507,11 @@ class XianyuLive:
                                 # 自动验证失败后立即熔断。实测滑块虽被拖到目标位置，
                                 # 服务端仍判定失败（行为特征识别），继续自动重试不会成功，
                                 # 只会让风控持续更久 —— 此时应转人工处理。
-                                risk_control.registry.get(self.cookie_id).trip(
-                                    "滑块自动验证失败，需人工处理"
+                                # 滑块失败后平台的风险评分不会几分钟就回落，
+                                # 阶梯冷却（5 分钟）太短，账号会立刻再次撞上滑块。
+                                risk_control.registry.get(self.cookie_id).block_for(
+                                    15 * 60,
+                                    "滑块自动验证失败，需人工处理（等待风险评分回落）",
                                 )
                                 # 本轮已经熔断过，后面基于 ret 的通用风控分支不要再记一次：
                                 # 同一次失败连续 trip 两次会让冷却阶梯跳级

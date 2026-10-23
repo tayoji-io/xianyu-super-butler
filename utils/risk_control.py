@@ -110,6 +110,17 @@ class AccountGuard:
                 # 补足一个令牌所需的时间
                 await asyncio.sleep((1 - self._tokens) * (60.0 / self.rate_per_minute))
 
+    def block_for(self, seconds: int, reason: str = "") -> None:
+        """按指定时长进入冷却。
+
+        滑块自动验证失败后需要比普通限流更长的恢复时间（平台侧的风险评分不会
+        在几分钟内回落），用 trip() 的阶梯冷却往往不够。
+        """
+        seconds = max(1, int(seconds))
+        self.blocked_until = max(self.blocked_until, time.monotonic() + seconds)
+        self.last_hit_reason = str(reason or "")[:200]
+        logger.warning(f"【{self.cookie_id}】进入冷却 {seconds} 秒：{reason}")
+
     def snapshot(self) -> Dict[str, object]:
         return {
             "cookie_id": self.cookie_id,

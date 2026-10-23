@@ -1109,7 +1109,19 @@ class XianyuSliderStealth:
         )
         return trajectory
     
-    def generate_human_trajectory(self, distance: float, vertical_span: float = 0.0):
+    def _trajectory_model_for_attempt(self, attempt: int) -> str:
+        """按尝试次数选轨迹模型。
+
+        默认轮换：第一次用慢速最小急动度（2.5~4 秒），第二次用 Ydisks 快节奏。
+        同一页面连续用同一种轨迹重试，平台侧看到的是"同一个人重复同样的动作"，
+        反而更容易判失败。可用环境变量 SLIDER_TRAJECTORY_MODEL=ydisks|slow 固定。
+        """
+        configured = (os.getenv("SLIDER_TRAJECTORY_MODEL") or "").strip().lower()
+        if configured in ("ydisks", "slow"):
+            return configured
+        return "slow" if attempt == 1 else "ydisks"
+
+    def generate_human_trajectory(self, distance: float, vertical_span: float = 0.0, model: str = ""):
         """生成人类化滑动轨迹 - Ydisks 生产验证方案（快节奏三段锚点 + 连续事件流）
 
         移植自 Ydisks-Xianyu-Helper 的行为契约：8-12 个三段式锚点
@@ -1119,6 +1131,21 @@ class XianyuSliderStealth:
         _generate_physics_trajectory 供对照回退。
         """
         try:
+            chosen = (model or os.getenv("SLIDER_TRAJECTORY_MODEL") or "ydisks").strip().lower()
+            if chosen == "slow":
+                logger.info(f"【{self.pure_user_id}】📐 使用慢速最小急动度轨迹模型")
+                trajectory = self._generate_physics_trajectory(distance)
+                self.current_trajectory_data = {
+                    "distance": distance,
+                    "model": "slow_minimum_jerk",
+                    "total_steps": len(trajectory),
+                    "trajectory_points": trajectory.copy(),
+                    "final_left_px": 0,
+                    "completion_used": False,
+                    "completion_steps": 0,
+                }
+                return trajectory
+
             from utils.slider_ydisks import build_ydisks_trajectory
             logger.info(f"【{self.pure_user_id}】📐 使用 Ydisks 快节奏轨迹模型")
             trajectory, target_duration, planned_delay = build_ydisks_trajectory(
@@ -1186,6 +1213,20 @@ class XianyuSliderStealth:
                 logger.warning(f"【{self.pure_user_id}】判定滑块类型失败，按普通滑块处理: {exc}")
                 is_scratch = False
             
+            # 拖动前先在页面上随意移动几下：nc 会统计按下之前的鼠标活动，
+            # 鼠标"凭空出现在滑块上"是很明显的机器特征。
+            try:
+                viewport = self.page.viewport_size or {"width": 1280, "height": 800}
+                for _ in range(random.randint(2, 3)):
+                    self.page.mouse.move(
+                        random.uniform(viewport["width"] * 0.2, viewport["width"] * 0.8),
+                        random.uniform(viewport["height"] * 0.2, viewport["height"] * 0.7),
+                        steps=random.randint(8, 16),
+                    )
+                    time.sleep(random.uniform(0.12, 0.3))
+            except Exception as warmup_err:
+                logger.debug(f"【{self.pure_user_id}】拖动前鼠标预热失败（忽略）: {warmup_err}")
+
             # 第一阶段：移动到滑块附近（模拟人类寻找滑块）
             try:
                 # 先移动到滑块附近（稍微偏左）
@@ -1305,6 +1346,14 @@ class XianyuSliderStealth:
                 mark_at = mark("松手前停顿", mark_at)
                 self.page.mouse.up()
                 mark_at = mark("松手", mark_at)
+                # 人手松手后不会瞬间静止，补一个几像素的小移动
+                try:
+                    self.page.mouse.move(
+                        current_x + random.uniform(1, 3),
+                        current_y + random.uniform(-2, 2),
+                    )
+                except Exception:
+                    pass
                 time.sleep(random.uniform(0.01, 0.03))
 
                 # Ydisks 方案：松手后在滑块元素上补发一次合成 click。
@@ -2291,13 +2340,24 @@ class XianyuSliderStealth:
             logger.error(f"【{self.pure_user_id}】分析失败原因时出错: {e}")
             return {}
     
-    def solve_slider(self, max_retries: int = 3, fast_mode: bool = False):
+    def solve_slider(self, max_retries: int = 2, fast_mode: bool = False):
         """处理滑块验证（极速模式）
         
         Args:
             max_retries: 最大重试次数（默认3次，因为同一个页面连续失败3次后就不会成功了）
             fast_mode: 快速查找模式（当已确认滑块存在时使用，减少等待时间）
         """
+        # 允许用环境变量覆盖尝试次数（1~3）。默认最多 2 次：第一次慢速、
+        # 第二次快节奏；再多只会持续推高风险评分。调用方传 3 也会被压到 2。
+        configured_attempts = (os.getenv("SLIDER_MAX_ATTEMPTS") or "").strip()
+        if configured_attempts:
+            try:
+                max_retries = max(1, min(3, int(configured_attempts)))
+            except ValueError:
+                max_retries = min(max_retries, 2)
+        else:
+            max_retries = min(max_retries, 2)
+
         failure_records = []
         current_strategy = 'human_like'  # 拟人策略（旧的 ultra_fast 统计已作废，不再混算）
         
@@ -2321,17 +2381,18 @@ class XianyuSliderStealth:
 
                 # 如果不是第一次尝试，短暂等待后重试
                 if attempt > 1:
-                    retry_delay = random.uniform(0.5, 1.0)  # 减少等待时间
-                    logger.info(f"【{self.pure_user_id}】等待{retry_delay:.2f}秒后重试...")
+                    # 失败后立刻重试会让平台的风险评分继续累积：nc 是按会话
+                    # 记行为的，1 秒内再拖一次基本必败。这里拉长到 12~20 秒，
+                    # 并重新加载验证页，拿一个干净的滑块会话。
+                    retry_delay = random.uniform(12.0, 20.0)
+                    logger.info(f"【{self.pure_user_id}】等待{retry_delay:.1f}秒后重试（避免连续失败加重风控）...")
                     time.sleep(retry_delay)
-                    
-                    # 不刷新页面，直接在原来的frame中重试
-                    # 保留frame引用，让重试时可以直接使用原来的frame查找滑块
-                    if hasattr(self, '_detected_slider_frame'):
-                        frame_info = "主页面" if self._detected_slider_frame is None else "Frame"
-                        logger.info(f"【{self.pure_user_id}】保留frame引用，将在原来的{frame_info}中重试")
-                    else:
-                        logger.info(f"【{self.pure_user_id}】未找到frame引用，将重新检测滑块位置")
+                    try:
+                        self.page.reload(wait_until="domcontentloaded", timeout=20000)
+                        time.sleep(random.uniform(1.5, 3.0))
+                        logger.info(f"【{self.pure_user_id}】已重新加载验证页")
+                    except Exception as reload_err:
+                        logger.warning(f"【{self.pure_user_id}】重新加载验证页失败，继续用当前页面: {reload_err}")
                 
                 # 1. 查找滑块元素（使用快速模式）
                 slider_container, slider_button, slider_track = self.find_slider_elements(fast_mode=fast_mode)
@@ -2348,7 +2409,11 @@ class XianyuSliderStealth:
                 # 3. 生成人类化轨迹（Ydisks 方案：Y 轴峰峰值取滑轨高度的一半）
                 from utils.slider_ydisks import get_vertical_span
                 vertical_span = get_vertical_span(slider_button, slider_track)
-                trajectory = self.generate_human_trajectory(slide_distance, vertical_span)
+                trajectory = self.generate_human_trajectory(
+                    slide_distance,
+                    vertical_span,
+                    model=self._trajectory_model_for_attempt(attempt),
+                )
                 if not trajectory:
                     logger.error(f"【{self.pure_user_id}】轨迹生成失败")
                     continue
