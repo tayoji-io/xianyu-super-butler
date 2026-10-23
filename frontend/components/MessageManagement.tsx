@@ -39,6 +39,7 @@ import {
   getMessageFilters,
   getQuickPhrases,
   sendChatMessage,
+  sendChatImage,
   getChatUserProfile,
   useQuickPhrase,
   toggleMessageFilter,
@@ -217,6 +218,8 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
   const [quickPhrases, setQuickPhrases] = useState<QuickPhrase[]>([]);
   const [showPhrases, setShowPhrases] = useState(false);
   const [sending, setSending] = useState(false);
+  const [uploadingImage, setUploadingImage] = useState(false);
+  const imageInputRef = useRef<HTMLInputElement>(null);
   // 消息列表滚动锚定：图片加载会撑高内容，只滚一次会停在半路
   const messagesScrollRef = useRef<HTMLDivElement>(null);
   const messagesContentRef = useRef<HTMLDivElement>(null);
@@ -730,6 +733,31 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
     void useQuickPhrase(phrase.id).catch(() => undefined);
   };
 
+  const handleImageSelected = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    // 清空 value，允许连续选同一张图
+    event.target.value = '';
+    if (!file || !activeConversation || !activeAccountId || uploadingImage) return;
+    if (file.size > 10 * 1024 * 1024) {
+      notify('图片不能超过 10MB', 'warning');
+      return;
+    }
+    setUploadingImage(true);
+    try {
+      await sendChatImage(activeAccountId, {
+        cid: activeConversation.cid,
+        toUserId: activeConversation.otherUserId,
+        file,
+      });
+      await Promise.all([loadMessages(true, true), loadConversations(true, true)]);
+      notify('图片已发送', 'success');
+    } catch (error) {
+      notify(`发送图片失败：${(error as Error).message}`, 'error');
+    } finally {
+      setUploadingImage(false);
+    }
+  };
+
   const sendMessage = async () => {
     const text = draft.trim();
     if (!text || !activeConversation || !activeAccountId || sending) return;
@@ -1117,9 +1145,22 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
                 <button type="button" title="表情（暂未开放）" className="hover:text-[var(--text)]">
                   <Smile className="h-5 w-5" />
                 </button>
-                <button type="button" title="图片（暂未开放）" className="hover:text-[var(--text)]">
-                  <Image className="h-5 w-5" />
+                <button
+                  type="button"
+                  title={uploadingImage ? '正在发送图片…' : '发送图片'}
+                  onClick={() => imageInputRef.current?.click()}
+                  disabled={uploadingImage}
+                  className="hover:text-[var(--text)] disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {uploadingImage ? <Loader2 className="h-5 w-5 animate-spin" /> : <Image className="h-5 w-5" />}
                 </button>
+                <input
+                  ref={imageInputRef}
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={handleImageSelected}
+                />
                 <div className="relative">
                   <button
                     type="button"

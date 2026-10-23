@@ -7034,6 +7034,75 @@ class XianyuLive:
             raise RuntimeError(str(reason))
         return response
 
+    async def send_im_image(self, cid, toid, image_url, width=None, height=None):
+        """发送图片消息。
+
+        和 send_im_text 走同一条 _send_im_request 通道，能拿到服务端响应；
+        本地图片会先用 ImageUploader 传到闲鱼 CDN。
+        """
+        full_cid = cid if "@goofish" in cid else f"{cid}@goofish"
+        full_toid = toid if "@goofish" in toid else f"{toid}@goofish"
+
+        if image_url.startswith('/static/uploads/') or image_url.startswith('static/uploads/'):
+            local_path = image_url.replace('/static/uploads/', 'static/uploads/', 1)
+            from utils.image_uploader import ImageUploader
+
+            uploader = ImageUploader(self.cookies_str, self.proxy_url)
+            async with uploader:
+                cdn_url = await uploader.upload_image(local_path)
+            if not cdn_url:
+                raise RuntimeError("图片上传到闲鱼 CDN 失败")
+            image_url = cdn_url
+
+        try:
+            width = int(width) if width else 800
+            height = int(height) if height else 600
+        except (TypeError, ValueError):
+            width, height = 800, 600
+
+        content = {
+            "contentType": 2,
+            "image": {
+                "pics": [
+                    {"height": height, "type": 0, "url": image_url, "width": width}
+                ]
+            },
+        }
+        content_base64 = base64.b64encode(
+            json.dumps(content, ensure_ascii=False).encode("utf-8")
+        ).decode("utf-8")
+
+        response = await self._send_im_request(
+            "/r/MessageSend/sendByReceiverScope",
+            [
+                {
+                    "uuid": generate_uuid(),
+                    "cid": full_cid,
+                    "conversationType": 1,
+                    "content": {
+                        "contentType": 101,
+                        "custom": {"type": 1, "data": content_base64},
+                    },
+                    "redPointPolicy": 0,
+                    "extension": {"extJson": "{}"},
+                    "ctx": {"appVersion": "1.0", "platform": "web"},
+                    "mtags": {},
+                    "msgReadStatusSetting": 1,
+                },
+                {
+                    "actualReceivers": [
+                        full_toid,
+                        f"{self.myid}@goofish",
+                    ],
+                },
+            ],
+        )
+        body = response.get("body", {}) if isinstance(response, dict) else {}
+        if isinstance(body, dict) and (body.get("reason") or body.get("code")):
+            reason = body.get("developerMessage") or body.get("reason") or body.get("code")
+            raise RuntimeError(str(reason))
+        return response
+
     async def init(self, ws):
         # 如果没有token或者token过期，获取新token
         token_refresh_attempted = False

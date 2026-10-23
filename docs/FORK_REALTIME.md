@@ -141,6 +141,19 @@ IM 的会话/消息接口不返回头像（`avatar` / `avatarUrl` / `senderAvata
 头像属于装饰性请求，必须让路给消息/订单：上面的批量与间隔就是为了不把配额
 吃光，也不会在风控期间继续撞接口。
 
-## 8. 后续可做
+## 8. 发送图片
+
+图片按钮此前是「暂未开放」，前端没有接、后端也没有发送接口，但底层能力早就
+有了（自动回复发图用的就是 `send_image_msg`）。现在接到聊天窗口：
+
+- 前端：选图后 `POST /chat/send-image/{cookie_id}`（multipart：`cid`、
+  `to_user_id`、`image`），成功后 `fresh` 刷新消息与会话；
+- 后端：图片存到 `static/uploads/images`，调用账号实例的 `send_im_image()`：
+  先用 `ImageUploader` 传到闲鱼 CDN，再走 `_send_im_request` 发送
+  （与文本消息同一通道，能拿到服务端响应，而不是 fire-and-forget）；
+- 限制：仅 `image/*`、单张不超过 10MB；
+- 失败会按 409/503/502 透传，前端提示具体原因。
+
+## 9. 后续可做
 
 暂无。

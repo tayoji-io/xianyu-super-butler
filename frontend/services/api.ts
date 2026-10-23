@@ -1310,6 +1310,17 @@ export const getChatUserProfile = async (
   return response.data;
 };
 
+export const sendChatImage = async (
+  cookieId: string,
+  data: { cid: string; toUserId: string; file: File },
+): Promise<{ success: boolean; message: string; image_url: string }> => {
+  const form = new FormData();
+  form.append('cid', data.cid);
+  form.append('to_user_id', data.toUserId);
+  form.append('image', data.file);
+  return post(`/chat/send-image/${encodeURIComponent(cookieId)}`, form);
+};
+
 export const sendChatMessage = async (
   cookieId: string,
   data: { cid: string; to_user_id: string; text: string }

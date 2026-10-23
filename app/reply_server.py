@@ -1746,6 +1746,63 @@ async def send_chat_message(
     return {"success": True, "message": "发送成功", "data": {"messageId": message_id}}
 
 
+@app.post("/chat/send-image/{cookie_id}")
+async def send_chat_image(
+    cookie_id: str,
+    cid: str = Form(...),
+    to_user_id: str = Form(...),
+    image: UploadFile = File(...),
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """人工发送图片消息：先存本地，再由账号实例上传到闲鱼 CDN 并发送。"""
+    _get_owned_chat_account(cookie_id, current_user)
+
+    if not image or not image.filename:
+        raise HTTPException(status_code=400, detail="请选择图片文件")
+    if not image.content_type or not image.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="请上传图片文件")
+
+    data = await image.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="图片内容为空")
+    if len(data) > 10 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="图片不能超过 10MB")
+
+    saved_url = image_manager.save_image(data, image.filename)
+    if not saved_url:
+        raise HTTPException(status_code=400, detail="图片保存失败")
+
+    width = height = None
+    try:
+        import io as _io
+
+        from PIL import Image as PILImage
+
+        with PILImage.open(_io.BytesIO(data)) as img:
+            width, height = img.size
+    except Exception:
+        pass
+
+    try:
+        await _run_on_account_loop(
+            cookie_id,
+            lambda instance: instance.send_im_image(
+                cid.strip(), to_user_id.strip(), saved_url, width, height
+            ),
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning(f"【{cookie_id}】发送图片失败: {exc}")
+        raise HTTPException(status_code=502, detail=f"发送图片失败: {exc}")
+
+    logger.info(
+        f"【{cookie_id}】后台用户 {current_user.get('username')} 人工发送图片，"
+        f"会话={cid}, 对方={to_user_id}, 大小={len(data)}"
+    )
+    return {"success": True, "message": "图片已发送", "image_url": saved_url}
+
+
 @app.post('/send-message', response_model=SendMessageResponse)
 async def send_message_api(request: SendMessageRequest):
     """发送消息API接口（使用秘钥验证）"""
