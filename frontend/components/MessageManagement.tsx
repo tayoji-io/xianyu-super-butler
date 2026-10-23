@@ -1187,7 +1187,23 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
             </div>
 
             <footer className="shrink-0 border-t border-[var(--border)] bg-[var(--surface)] px-4 py-3 sm:px-5">
-              <div className="mb-2 flex items-center gap-4 text-[var(--text-muted)]">
+              <textarea
+                ref={composerRef}
+                value={draft}
+                onChange={(event) => setDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' && !event.shiftKey) {
+                    event.preventDefault();
+                    void sendMessage();
+                  }
+                }}
+                rows={2}
+                placeholder={activeAccount?.connected ? '输入消息' : '账号离线，暂时无法发送'}
+                disabled={!activeAccount?.connected}
+                className="w-full resize-none border-0 bg-[var(--surface)] px-0 py-1 text-sm leading-6 text-[var(--text)] outline-none focus:outline-none focus-visible:outline-none placeholder:text-[var(--text-soft)] disabled:bg-[var(--surface)]"
+              />
+              <div className="mt-2 flex items-center justify-between gap-2">
+                <div className="flex items-center gap-4 text-[var(--text-muted)]">
                 <div className="relative flex h-6 items-center">
                   <button
                     ref={emojiButtonRef}
@@ -1287,23 +1303,7 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
                     </div>
                   )}
                 </div>
-              </div>
-              <div className="flex items-end gap-2 sm:gap-3">
-                <textarea
-                  ref={composerRef}
-                  value={draft}
-                  onChange={(event) => setDraft(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter' && !event.shiftKey) {
-                      event.preventDefault();
-                      void sendMessage();
-                    }
-                  }}
-                  rows={2}
-                  placeholder={activeAccount?.connected ? '输入消息' : '账号离线，暂时无法发送'}
-                  disabled={!activeAccount?.connected}
-                  className="min-h-[56px] min-w-0 flex-1 resize-none border-0 bg-[var(--surface)] px-0 py-1 text-sm leading-6 text-[var(--text)] outline-none focus:outline-none focus-visible:outline-none placeholder:text-[var(--text-soft)] disabled:bg-[var(--surface)] sm:min-h-[72px]"
-                />
+                </div>
                 <button
                   type="button"
                   onClick={() => void sendMessage()}
