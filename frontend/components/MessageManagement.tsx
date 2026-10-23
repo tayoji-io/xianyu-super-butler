@@ -50,9 +50,10 @@ type View = 'messages' | 'filters';
 type MobilePane = 'list' | 'chat';
 
 // 轮询间隔。会话列表与消息都要经 WebSocket 透传到闲鱼，频率过高会把账号
-// 打到限流（429 flow controled）；聊天场景 10 秒的延迟是可接受的。
-const CONVERSATION_POLL_MS = 10000;
-const MESSAGE_POLL_MS = 10000;
+// 打到限流（429 flow controled）。实时性由 SSE 负责，轮询只是断线兜底，
+// 所以放宽到 30 秒，进一步减少透传请求。
+const CONVERSATION_POLL_MS = 30000;
+const MESSAGE_POLL_MS = 30000;
 const READ_WATERMARKS_STORAGE_KEY = 'xianyu-message-read-watermarks-v2';
 const MAX_READ_WATERMARKS = 500;
 
@@ -198,7 +199,10 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
   const [quickPhrases, setQuickPhrases] = useState<QuickPhrase[]>([]);
   const [showPhrases, setShowPhrases] = useState(false);
   const [sending, setSending] = useState(false);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  // 消息列表滚动锚定：图片加载会撑高内容，只滚一次会停在半路
+  const messagesScrollRef = useRef<HTMLDivElement>(null);
+  const messagesContentRef = useRef<HTMLDivElement>(null);
+  const pinnedToBottomRef = useRef(true);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const searchInputTouchedRef = useRef(false);
   const activeCidRef = useRef('');
@@ -538,9 +542,45 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
     return () => window.clearInterval(timer);
   }, [isActive, view, activeAccountId, activeCid]);
 
+  const scrollMessagesToBottom = (smooth = false) => {
+    const container = messagesScrollRef.current;
+    if (!container) return;
+    container.scrollTo({
+      top: container.scrollHeight,
+      behavior: smooth ? 'smooth' : 'auto',
+    });
+  };
+
+  const handleMessagesScroll = () => {
+    const container = messagesScrollRef.current;
+    if (!container) return;
+    // 用户往上翻看历史时不要抢滚动；贴近底部（80px 内）才继续跟随
+    pinnedToBottomRef.current =
+      container.scrollHeight - container.scrollTop - container.clientHeight < 80;
+  };
+
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (pinnedToBottomRef.current) scrollMessagesToBottom(false);
   }, [messages]);
+
+  // 图片是异步加载的：内容高度变化时如果仍贴着底部，就再跟一次，
+  // 这样带图片的消息也能真正停在最新一条。
+  useEffect(() => {
+    const content = messagesContentRef.current;
+    if (!content || typeof ResizeObserver === 'undefined') return undefined;
+    const observer = new ResizeObserver(() => {
+      if (pinnedToBottomRef.current) scrollMessagesToBottom(false);
+    });
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, [activeCid, activeAccountId]);
+
+  // 切会话时重新贴底；先同步滚一次，图片加载后由上面的 observer 校正
+  useEffect(() => {
+    pinnedToBottomRef.current = true;
+    const timer = window.setTimeout(() => scrollMessagesToBottom(false), 0);
+    return () => window.clearTimeout(timer);
+  }, [activeCid]);
 
   useEffect(() => {
     // Chromium 和部分密码管理器会无视 autocomplete="off"，把本站保存的
@@ -858,13 +898,18 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
               </span>
             </div>
 
-            <div className="min-h-0 flex-1 overflow-y-auto bg-[var(--app-bg)] px-4 py-6 sm:px-8">
+            <div
+              ref={messagesScrollRef}
+              data-testid="message-scroll"
+              onScroll={handleMessagesScroll}
+              className="min-h-0 flex-1 overflow-y-auto bg-[var(--app-bg)] px-4 py-6 sm:px-8"
+            >
               {messagesLoading && messages.length === 0 ? (
                 <div className="flex h-full items-center justify-center">
                   <Loader2 className="h-6 w-6 animate-spin text-[#d6b600]" />
                 </div>
               ) : (
-                <div className="mx-auto max-w-4xl space-y-4">
+                <div ref={messagesContentRef} data-testid="message-content" className="mx-auto max-w-4xl space-y-4">
                   {messages.map((message, index) => {
                     const previous = messages[index - 1];
                     const showTime = !previous || Math.abs(message.time - previous.time) > 300_000;
@@ -925,7 +970,6 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
                   {messages.length === 0 && !messagesLoading && (
                     <p className="py-16 text-center text-sm text-[var(--text-soft)]">暂无聊天记录</p>
                   )}
-                  <div ref={messagesEndRef} />
                 </div>
               )}
             </div>
