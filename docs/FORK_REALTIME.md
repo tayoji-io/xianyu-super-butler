@@ -92,15 +92,18 @@ curl -N -H "Authorization: Bearer <token>" http://127.0.0.1:8080/chat/events
 
 ## 6. 消息列表滚动
 
-图片是异步加载的，列表高度会在滚动之后继续变化，只滚一次会停在半路。这里没有
-把 DOM 逆序（`column-reverse`）：消息列表还有分页加载与读屏顺序的考虑，逆序后
-历史消息、时间分隔线的处理都会变复杂。
+图片是异步加载的，列表高度会在滚动之后继续变化，只 `scrollIntoView` 一次会停在
+半路。改用 **column-reverse** 方案（参考 `fmz_web_next` 的 `chat-body.tsx`）：
 
-改用「贴底跟随」：
+- 滚动容器 `flex flex-col-reverse`，`scrollTop = 0` 就是底部；
+- 消息仍按时间正序渲染在单个内容容器里，容器 `mb-auto` 保证短会话贴顶；
+- 新消息 / 图片撑高时，浏览器自动保持贴底，不需要 `scrollIntoView` 或
+  `ResizeObserver`；
+- 用户上翻后 `scrollTop` 变为负值，浏览器会保持视口不动（实测位移 0px）；
+- 贴底判断用 `Math.abs(scrollTop) < 80`，兼容不同浏览器的正负约定。
 
-- 监听滚动，距底部 80px 内视为贴底；用户上翻阅读时不再抢滚动；
-- 内容容器挂 `ResizeObserver`，高度变化（图片加载）时若仍贴底就再滚一次；
-- 切换会话时重置为贴底。
+为什么不用 `scrollIntoView`：它会留下非 0 的 `scrollTop`，破坏 column-reverse
+容器的天然贴底锚点，内容一变高就差一点点。
 
 ## 7. 后续可做
 

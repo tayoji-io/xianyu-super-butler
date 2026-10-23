@@ -542,44 +542,31 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
     return () => window.clearInterval(timer);
   }, [isActive, view, activeAccountId, activeCid]);
 
-  const scrollMessagesToBottom = (smooth = false) => {
+  // 滚动容器是 column-reverse：scrollTop=0 就是底部，内容变高（图片加载）时
+  // 浏览器会自己保持贴底，不需要 scrollIntoView 或 ResizeObserver。
+  // 参考实现见 fmz_web_next chat-body.tsx 的注释：scrollIntoView 会留下非 0
+  // scrollTop，破坏容器的天然贴底锚点。
+  const scrollMessagesToBottom = () => {
     const container = messagesScrollRef.current;
-    if (!container) return;
-    container.scrollTo({
-      top: container.scrollHeight,
-      behavior: smooth ? 'smooth' : 'auto',
-    });
+    if (container) container.scrollTop = 0;
   };
 
   const handleMessagesScroll = () => {
     const container = messagesScrollRef.current;
     if (!container) return;
-    // 用户往上翻看历史时不要抢滚动；贴近底部（80px 内）才继续跟随
-    pinnedToBottomRef.current =
-      container.scrollHeight - container.scrollTop - container.clientHeight < 80;
+    // column-reverse 下 scrollTop 0 是底部，向上翻会变成负值（部分浏览器用正值），
+    // 所以取绝对值判断「距底部多远」，80px 内视为贴底
+    pinnedToBottomRef.current = Math.abs(container.scrollTop) < 80;
   };
 
   useEffect(() => {
-    if (pinnedToBottomRef.current) scrollMessagesToBottom(false);
+    if (pinnedToBottomRef.current) scrollMessagesToBottom();
   }, [messages]);
 
-  // 图片是异步加载的：内容高度变化时如果仍贴着底部，就再跟一次，
-  // 这样带图片的消息也能真正停在最新一条。
-  useEffect(() => {
-    const content = messagesContentRef.current;
-    if (!content || typeof ResizeObserver === 'undefined') return undefined;
-    const observer = new ResizeObserver(() => {
-      if (pinnedToBottomRef.current) scrollMessagesToBottom(false);
-    });
-    observer.observe(content);
-    return () => observer.disconnect();
-  }, [activeCid, activeAccountId]);
-
-  // 切会话时重新贴底；先同步滚一次，图片加载后由上面的 observer 校正
+  // 切会话重新贴底
   useEffect(() => {
     pinnedToBottomRef.current = true;
-    const timer = window.setTimeout(() => scrollMessagesToBottom(false), 0);
-    return () => window.clearTimeout(timer);
+    scrollMessagesToBottom();
   }, [activeCid]);
 
   useEffect(() => {
@@ -902,14 +889,18 @@ const MessageManagement: React.FC<MessageManagementProps> = ({ isActive = true }
               ref={messagesScrollRef}
               data-testid="message-scroll"
               onScroll={handleMessagesScroll}
-              className="min-h-0 flex-1 overflow-y-auto bg-[var(--app-bg)] px-4 py-6 sm:px-8"
+              className="flex min-h-0 flex-1 flex-col-reverse overflow-y-auto bg-[var(--app-bg)] px-4 py-6 sm:px-8"
             >
               {messagesLoading && messages.length === 0 ? (
                 <div className="flex h-full items-center justify-center">
                   <Loader2 className="h-6 w-6 animate-spin text-[#d6b600]" />
                 </div>
               ) : (
-                <div ref={messagesContentRef} data-testid="message-content" className="mx-auto max-w-4xl space-y-4">
+                <div
+                  ref={messagesContentRef}
+                  data-testid="message-content"
+                  className="mx-auto mb-auto w-full max-w-4xl space-y-4"
+                >
                   {messages.map((message, index) => {
                     const previous = messages[index - 1];
                     const showTime = !previous || Math.abs(message.time - previous.time) > 300_000;
