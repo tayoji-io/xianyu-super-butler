@@ -1487,6 +1487,73 @@ async def get_chat_accounts(current_user: Dict[str, Any] = Depends(get_current_u
     return {"success": True, "data": result}
 
 
+# fork:avatar 买家头像：IM 会话/消息接口不返回头像，但 user.page.head 能拿到。
+# 头像几乎不变，进程内缓存 7 天，避免每次打开消息中心都打一批 mtop 请求。
+_chat_user_profile_cache: Dict[tuple, tuple] = {}
+_CHAT_PROFILE_TTL = 7 * 24 * 3600
+_CHAT_PROFILE_CACHE_MAX = 5000
+
+
+@app.get("/chat/users/{cookie_id}/{user_id}/profile")
+async def get_chat_user_profile(cookie_id: str, user_id: str, current_user: Dict[str, Any] = Depends(get_current_user)):
+    """获取买家公开资料（昵称、头像），用于消息中心补全头像。"""
+    _get_owned_chat_account(cookie_id, current_user)
+
+    user_id = (user_id or "").strip()
+    if not user_id or not user_id.isdigit():
+        raise HTTPException(status_code=400, detail="用户 ID 不合法")
+
+    key = (cookie_id, user_id)
+    now = time.time()
+    cached = _chat_user_profile_cache.get(key)
+    if cached and cached[0] > now:
+        return {"success": True, "data": cached[1]}
+
+    details = db_manager.get_cookie_details(cookie_id) or {}
+    cookies_str = details.get("value") or ""
+    if not cookies_str:
+        raise HTTPException(status_code=404, detail="账号 Cookie 不存在")
+
+    from utils.xianyu_seller_api import XianyuSellerAPI, parse_user_profile
+
+    try:
+        async with XianyuSellerAPI(cookie_id, cookies_str) as api:
+            raw = await api.get_user_profile(user_id)
+        profile = parse_user_profile(raw)
+    except Exception as exc:
+        text = str(exc)
+        # 账号被处置/注销是正常业务结果，不是服务故障：返回空资料并做负缓存，
+        # 避免每次打开消息中心都去撞同一个错误。
+        if (
+            "FAIL_BIZ_USER_PAGE_FORBIDDEN" in text
+            or "已被处置" in text
+            or "用户不存在" in text
+            or "USER_NOT_EXIST" in text
+        ):
+            data = {"userId": user_id, "nickname": "", "avatarUrl": ""}
+            _chat_user_profile_cache[key] = (now + 24 * 3600, data)
+            return {"success": True, "data": data}
+        logger.warning(f"【{cookie_id}】获取用户 {user_id} 资料失败: {exc}")
+        raise HTTPException(status_code=502, detail="获取用户资料失败，请稍后重试")
+
+    avatar_url = profile.get("avatar_url") or ""
+    # 平台给未设置头像的用户返回的是旧 CDN 上的通用占位图（gtms03 已不支持
+    # HTTPS，浏览器会直接报 SSL 错误）。当成没有头像处理，前端用首字母占位，
+    # 比一张裂图或灰色人像更清楚。
+    if "gtms03.alicdn.com" in avatar_url or "TB1LFGeKVXXXXbCaXXX07tlTXXX" in avatar_url:
+        avatar_url = ""
+
+    data = {
+        "userId": user_id,
+        "nickname": profile.get("nickname") or "",
+        "avatarUrl": avatar_url,
+    }
+    if len(_chat_user_profile_cache) > _CHAT_PROFILE_CACHE_MAX:
+        _chat_user_profile_cache.clear()
+    _chat_user_profile_cache[key] = (now + _CHAT_PROFILE_TTL, data)
+    return {"success": True, "data": data}
+
+
 @app.get("/chat/events")
 async def chat_events(request: Request, current_user: Dict[str, Any] = Depends(get_current_user)):
     """聊天事件流（SSE）。

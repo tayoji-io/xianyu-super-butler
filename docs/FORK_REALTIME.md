@@ -121,6 +121,19 @@ curl -N -H "Authorization: Bearer <token>" http://127.0.0.1:8080/chat/events
   视口固定在原消息上（实测加载 20 条后位移 0px），再按高度差补偿一次会双重
   调整、反而跳 1200 多像素。
 
-## 7. 后续可做
+## 7. 买家头像
+
+IM 的会话/消息接口不返回头像（`avatar` / `avatarUrl` / `senderAvatar` 都是空），
+前端此前只能显示首字母占位。补充：
+
+- 新增 `GET /chat/users/{cookie_id}/{user_id}/profile`，走
+  `mtop.idle.web.user.page.head`（结构化接口，不需要浏览器）；
+- 服务端进程内缓存 7 天；被平台处置的用户返回空资料并负缓存 1 天，
+  避免每次打开消息中心都撞同一个错误；
+- 前端按 `userId` 懒加载：顺序请求、间隔 200ms、单次最多 20 个，结果存在内存；
+- 平台默认占位头像（`gtms03.alicdn.com` 旧 CDN，HTTPS 已不可用）视为无头像，
+  回落到首字母，避免裂图。
+
+## 8. 后续可做
 
 暂无。

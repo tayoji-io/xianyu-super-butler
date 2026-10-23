@@ -1298,6 +1298,18 @@ export const getChatMessages = async (
   return response.data;
 };
 
+/** 买家公开资料（昵称/头像）：IM 接口不返回头像，单独补 */
+export const getChatUserProfile = async (
+  cookieId: string,
+  userId: string,
+): Promise<{ userId: string; nickname: string; avatarUrl: string }> => {
+  const response = await get<{
+    success: boolean;
+    data: { userId: string; nickname: string; avatarUrl: string };
+  }>(`/chat/users/${encodeURIComponent(cookieId)}/${encodeURIComponent(userId)}/profile`);
+  return response.data;
+};
+
 export const sendChatMessage = async (
   cookieId: string,
   data: { cid: string; to_user_id: string; text: string }
