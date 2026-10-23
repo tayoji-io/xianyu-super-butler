@@ -160,9 +160,10 @@ Compose 的好处是配置写在文件里、改起来清楚，升级也只有一
 
 ### 发布自己的镜像（可选）
 
-仓库已带 `.github/workflows/docker-publish.yml`：推 `main`、打 `v*` 标签，或在 Actions 里
-手动 `Run workflow`，就会构建 `linux/amd64` + `linux/arm64` 并推送到
-`ghcr.io/tayoji-io/xianyu-super-butler`。
+仓库已带 `.github/workflows/docker-publish.yml`：**打 `v*` 标签，或在 Actions 里手动
+`Run workflow`** 才会构建 `linux/amd64` + `linux/arm64` 并推送到
+`ghcr.io/tayoji-io/xianyu-super-butler`。推 `main` 只更新代码、不构建镜像，
+避免每次提交都跑一次多架构打包。
 
 首次发布后请打开
 `https://github.com/users/tayoji-io/packages/container/xianyu-super-butler`，
@@ -171,25 +172,25 @@ Compose 的好处是配置写在文件里、改起来清楚，升级也只有一
 
 ### 打 tag 自动发版
 
-推 `main` 和推 tag 走同一个 workflow，但产出的标签不同：
+只有打 tag 或手动触发才会构建，产出的标签不同：
 
 | 触发 | 产出的镜像标签 |
 | --- | --- |
-| 推 `main` | `latest` |
-| 推 `v3.3.1` | `v3.3.1`、`3.3.1` |
+| 推 `v3.3.1` | `latest`、`v3.3.1`、`3.3.1` |
+| Actions 手动 Run workflow | `sha-<提交短哈希>` |
 
-注意 `latest` 只在默认分支构建，**打 tag 不会覆盖 `latest`**，所以线上固定版本请显式拉版本号。
+推 `main` 不会构建。线上固定版本请显式拉版本号，不要依赖 `latest`。
 
 发版步骤：
 
 ```bash
 # 1. 先把版本号改成一致（镜像版本、关于页、README 徽章）
 #    app/announcement.py 里的 APP_VERSION，以及 README 顶部的 Version 徽章
-# 2. 提交
+# 2. 提交并推送代码（这一步不会触发构建）
 git add -A && git commit -m "release: 3.3.1"
 git push origin main
 
-# 3. 打 tag 并推送（tag 名必须以 v 开头，workflow 只监听 v*）
+# 3. 打 tag 并推送（tag 名必须以 v 开头，workflow 只监听 v*，这一步才会构建）
 git tag v3.3.1
 git push origin v3.3.1
 ```

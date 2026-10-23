@@ -10,12 +10,12 @@
 
 name: Publish Docker image
 
+# 只在打版本 tag 或手动触发时构建：推 main 只更新代码，不发镜像，
+# 避免每次提交都跑一次多架构构建（Actions 时长和镜像存储都很贵）。
 on:
   push:
     tags:
       - 'v*'
-    branches:
-      - main
   workflow_dispatch:
 
 env:
@@ -53,9 +53,10 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=latest,enable=${{ github.ref_type == 'tag' }}
             type=ref,event=tag
             type=semver,pattern={{version}}
+            type=sha,enable=${{ github.event_name == 'workflow_dispatch' }}
 
       - name: Build and push
         uses: docker/build-push-action@v6
